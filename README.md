@@ -32,3 +32,4 @@ DEEPSEEK_API_KEY optional; without it unstructured docs return unmapped:warning.
 
 Dashboard: https://ratematch-freight-invoice-contract-audit.vokrix.co
 Vercel: ratematch-freight-invoice-contract-audit
+Cloudflare: ratematch-freight-invoice-contract-audit.vokrix.co
