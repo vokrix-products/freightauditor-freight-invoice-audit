@@ -29,3 +29,6 @@ Each result record has title, status, due_date, details. The poller stores statu
 
 ## Configuration
 DEEPSEEK_API_KEY optional; without it unstructured docs return unmapped:warning.
+
+Dashboard: https://ratematch-freight-invoice-contract-audit.vokrix.co
+Vercel: ratematch-freight-invoice-contract-audit
