@@ -34,3 +34,4 @@ Dashboard: https://ratematch-freight-invoice-contract-audit.vokrix.co
 Vercel: ratematch-freight-invoice-contract-audit
 Cloudflare: ratematch-freight-invoice-contract-audit.vokrix.co
 Railway: freightauditor-freight-invoice-audit
+Cloudflare: freightauditor-freight-invoice-audit.vokrix.co
