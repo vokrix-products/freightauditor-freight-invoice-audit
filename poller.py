@@ -87,7 +87,7 @@ def notify(customer_id, success):
             "read": False,
         }
         resp = requests.post(
-            "https://njyvnmczoydsaewvfhyq.supabase.co/rest/v1/notifications",
+            f"{SUPABASE_URL}/rest/v1/notifications",
             headers=supabase_headers(),
             json=payload,
         )
