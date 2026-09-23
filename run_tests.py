@@ -74,9 +74,15 @@ def test_rate_sheet_ignores_blank_invoice_columns():
     # Regression: the extractor returns every schema key with explicit nulls, so
     # an empty invoice_number column used to force document_type=invoice and the
     # rate sheet was reported missing invoice fields.
+    #
+    # fuel_surcharge_table is required here: _assign_status returns
+    # contract-review:warning for any rate basis outside flat / minimum charge /
+    # per unit that has no fuel surcharge schedule. That rule is pre-existing on
+    # main. Without the column this fixture stops at contract-review and never
+    # reaches the valid:good this test is asserting.
     data = _csv(
-        "invoice_number,carrier_name,effective_date,expiration_date,rate_basis,base_rate\n"
-        ",Carrier F,2025-01-01,2030-01-01,per cwt,25\n"
+        "invoice_number,carrier_name,effective_date,expiration_date,rate_basis,base_rate,fuel_surcharge_table\n"
+        ",Carrier F,2025-01-01,2030-01-01,per cwt,25,12%\n"
     )
     records = process_file(data)
     assert len(records) == 1
