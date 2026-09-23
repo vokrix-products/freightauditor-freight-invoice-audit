@@ -44,26 +44,26 @@ KEY_ALIASES_RAW = {
     "destination_location": ["destination location", "destination", "destination city", "destination address", "destination city/state/postal code", "destination_zip", "destination zone"],
     "actual_weight": ["actual weight", "actual weight (lbs)", "actual_weight", "weight"],
     "billable_weight": ["billable weight", "billed weight", "billable_weight", "billing weight"],
-    "freight_charge": ["freight charge", "freight", "freight charges", "freight_charge", "linehaul", "line haul"],
+    "freight_charge": ["freight charge", "freight", "freight charges", "freight_charge", "linehaul", "line haul", "linehaul charge", "line haul charge"],
     "fuel_surcharge": ["fuel surcharge", "fuel", "fuel_surcharge", "fsc"],
     "accessorial_codes": ["accessorial code", "accessorial codes", "accessorial_code"],
     "accessorial_descriptions": ["accessorial description", "accessorial descriptions", "accessorial_desc"],
     "accessorial_charges": ["accessorial charge", "accessorial charges", "accessorial_charge"],
-    "total_charges": ["total charges", "total charge", "total", "invoice total", "total_charges", "price", "amount"],
+    "total_charges": ["total charges", "total charge", "total", "invoice total", "total_charges", "price", "amount", "total_amount", "total amount", "grand total", "invoice amount"],
     "payment_due_date": ["payment due date", "due date", "payment_due_date", "due_date", "invoice due date"],
     "currency": ["currency", "curr"],
-    "invoice_line_items": ["invoice line item details", "line item details", "line_items", "invoice line-item details"],
+    "invoice_line_items": ["invoice line item details", "line item details", "line_items", "invoice line-item details", "invoice_line_items"],
     "source_file_name": ["source file name", "source filename", "filename"],
-    "contract_rate_sheet_identifier": ["contract/rate-sheet identifier", "contract id", "rate sheet id", "rate_sheet_id"],
-    "effective_date": ["effective date", "effective", "eff date", "effective_date"],
-    "expiration_date": ["expiration date", "expiration", "exp date", "expiration_date"],
-    "origin_zone_zip_postal": ["origin zone/zip/postal code", "origin zone", "origin_zip", "origin postal", "origin_zone"],
-    "destination_zone_zip_postal": ["destination zone/zip/postal code", "destination zone", "destination_zip", "destination postal", "destination_zone"],
-    "freight_class_commodity": ["freight class/commodity", "freight class", "commodity", "class", "freight_class", "product"],
+    "contract_rate_sheet_identifier": ["contract/rate-sheet identifier", "contract id", "rate sheet id", "rate_sheet_id", "contract_rate_sheet_identifier", "contract_reference"],
+    "effective_date": ["effective date", "effective", "eff date", "effective_date", "rate_sheet_effective_date", "rate sheet effective date"],
+    "expiration_date": ["expiration date", "expiration", "exp date", "expiration_date", "rate_sheet_expiration_date", "rate sheet expiration date"],
+    "origin_zone_zip_postal": ["origin zone/zip/postal code", "origin zone", "origin_zip", "origin postal", "origin_zone", "origin_zone_zip_postal"],
+    "destination_zone_zip_postal": ["destination zone/zip/postal code", "destination zone", "destination_zip", "destination postal", "destination_zone", "destination_zone_zip_postal"],
+    "freight_class_commodity": ["freight class/commodity", "freight class", "commodity", "class", "freight_class", "product", "freight_class_commodity"],
     "rate_basis": ["rate basis", "rate_basis", "basis"],
     "minimum_charge": ["minimum charge", "minimum_charge", "min charge"],
     "base_rate": ["base rate", "base_rate", "rate"],
-    "fuel_surcharge_table": ["fuel surcharge table/percentage schedule", "fuel surcharge table", "fuel schedule", "fuel percentage", "fuel_surcharge_table"],
+    "fuel_surcharge_table": ["fuel surcharge table/percentage schedule", "fuel surcharge table", "fuel schedule", "fuel percentage", "fuel_surcharge_table", "fuel_surcharge_schedule", "fuel surcharge schedule"],
     "accessorial_rule_code_description_amount": ["accessorial rule/code/description/amount", "accessorial rule", "accessorial code"],
     "expected_freight_charge": ["expected freight charge", "expected freight", "expected_freight_charge"],
     "expected_fuel_surcharge": ["expected fuel surcharge", "expected fuel", "expected_fuel_surcharge"],
@@ -76,6 +76,31 @@ KEY_ALIASES_RAW = {
     "rate_sheet_status": ["rate-sheet status", "rate sheet status"],
     "mapping_template_version": ["mapping template version"],
 }
+
+
+# Fields that prove a document really is an invoice / rate sheet. Detection scores
+# these by VALUE. It must not use key presence: the extractor returns the whole
+# schema with explicit nulls, so every document has an invoice_number key.
+INVOICE_MARKER_FIELDS = (
+    "invoice_number",
+    "invoice_date",
+    "ship_date",
+    "freight_charge",
+    "invoice_line_items",
+    "total_charges",
+    "bill_of_lading_pro_number",
+)
+
+RATE_SHEET_MARKER_FIELDS = (
+    "lanes",
+    "contract_rate_sheet_identifier",
+    "effective_date",
+    "expiration_date",
+    "rate_basis",
+    "base_rate",
+    "minimum_charge",
+    "fuel_surcharge_table",
+)
 
 
 def _token(value: str) -> str:
@@ -122,6 +147,21 @@ def _to_float(value: Any) -> Any:
         return None
 
 
+def _has_value(record: Dict[str, Any], field: str) -> bool:
+    """True when a field carries real content. Nulls, blanks and empty
+    containers all mean the document did not actually provide that field."""
+    value = record.get(field)
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip() != ""
+    if isinstance(value, (list, dict)):
+        return len(value) > 0
+    if isinstance(value, bool):
+        return value
+    return True
+
+
 def _parse_date(value: Any) -> Any:
     if value is None:
         return None
@@ -132,7 +172,18 @@ def _parse_date(value: Any) -> Any:
     text = str(value).strip()
     if not text or text.lower() in {"none", "null", "nan", ""}:
         return None
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%d-%b-%Y", "%b %d, %Y", "%Y/%m/%d"):
+    for fmt in (
+        "%Y-%m-%d",
+        "%m/%d/%Y",
+        "%m-%d-%Y",
+        "%d-%b-%Y",
+        "%b %d, %Y",
+        "%B %d, %Y",
+        "%Y/%m/%d",
+        "%Y-%m-%d %I:%M %p",
+        "%b %d, %Y %I:%M %p",
+        "%B %d, %Y %I:%M %p",
+    ):
         try:
             return datetime.strptime(text, fmt).date()
         except ValueError:
@@ -178,30 +229,51 @@ def _normalize_row(row: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
-def _detect_document_type(record: Dict[str, Any]) -> str:
-    keys = set(record.keys())
-    invoice_markers = {
-        "invoice_number",
-        "carrier_name",
-        "ship_date",
-        "freight_charge",
-        "total_charges",
-        "bill_of_lading_pro_number",
-    }
-    rate_markers = {
-        "effective_date",
-        "expiration_date",
-        "base_rate",
-        "rate_basis",
-        "minimum_charge",
-        "contract_rate_sheet_identifier",
-    }
+def _expand_rate_lanes(record: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Split a rate sheet with a lanes[] array into one record per rate line.
 
-    if keys & invoice_markers:
-        return "invoice"
-    if keys & rate_markers:
+    A rate sheet is audited line by line, and the per-row duplicate check in
+    _assign_status already assumes one row per lane. Every line inherits the
+    sheet-level fields (carrier, effective/expiration date, contract id); lane
+    fields win where they carry a value.
+    """
+    lanes = record.get("lanes")
+    if not isinstance(lanes, list) or not lanes:
+        return [record]
+
+    sheet_fields = {key: value for key, value in record.items() if key != "lanes"}
+    expanded: List[Dict[str, Any]] = []
+
+    for index, lane in enumerate(lanes):
+        if not isinstance(lane, dict):
+            continue
+        merged = dict(sheet_fields)
+        for raw_key, value in lane.items():
+            canonical = _canonical_key(raw_key)
+            cleaned = _clean_value(value)
+            if cleaned is not None:
+                merged[canonical] = cleaned
+        for field in NUMERIC_FIELDS:
+            if field in merged:
+                merged[field] = _to_float(merged[field])
+        merged["_rate_line_index"] = index
+        merged["_document_type_hint"] = "rate_sheet"
+        expanded.append(merged)
+
+    return expanded or [record]
+
+
+def _detect_document_type(record: Dict[str, Any]) -> str:
+    invoice_score = sum(1 for field in INVOICE_MARKER_FIELDS if _has_value(record, field))
+    rate_score = sum(1 for field in RATE_SHEET_MARKER_FIELDS if _has_value(record, field))
+
+    if rate_score > invoice_score:
         return "rate_sheet"
-    if "carrier_name" in keys:
+    if invoice_score:
+        return "invoice"
+    if rate_score:
+        return "rate_sheet"
+    if _has_value(record, "carrier_name"):
         return "invoice"
     return "unknown"
 
@@ -411,9 +483,15 @@ def process_file(file_bytes: bytes) -> List[Dict[str, Any]]:
 
     normalized_rows = [row for row in normalized_rows if row]
 
+    expanded_rows: List[Dict[str, Any]] = []
+    for row in normalized_rows:
+        expanded_rows.extend(_expand_rate_lanes(row))
+    normalized_rows = expanded_rows
+
     output: List[Dict[str, Any]] = []
     for record in normalized_rows:
-        document_type = _detect_document_type(record)
+        forced_type = record.pop("_document_type_hint", None)
+        document_type = forced_type or _detect_document_type(record)
         record["_type"] = document_type
 
         status, notes = _assign_status(record, normalized_rows)
