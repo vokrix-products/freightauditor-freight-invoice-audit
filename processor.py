@@ -502,7 +502,13 @@ def process_file(file_bytes: bytes) -> List[Dict[str, Any]]:
             or record.get("vendor_name")
             or "Unknown Vendor"
         )
-        due_date = _iso_date(record.get("payment_due_date") or record.get("due_date"))
+        due_date_value = record.get("payment_due_date") or record.get("due_date")
+        if due_date_value is None and document_type == "rate_sheet":
+            # The "Due / Expires" column and the Upcoming Expirations widget both
+            # read due_date. A rate sheet has no payment due date, so without this
+            # the one document type that actually expires could never surface.
+            due_date_value = record.get("expiration_date")
+        due_date = _iso_date(due_date_value)
 
         details: Dict[str, Any] = {}
         for key, value in record.items():
