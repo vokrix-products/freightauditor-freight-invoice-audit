@@ -140,8 +140,22 @@ def release_stale_claims():
         print(f"released {len(released)} stale claim(s)", flush=True)
 
 
-def upload_results(job_id, results):
-    path = f"{job_id}.json"
+def upload_results(job_id, results, customer_id=None):
+    """Upload the result file into the owning customer's folder.
+
+    The key layout matters. The dashboard downloads result files as the signed-in
+    user with the anon key, and the `results` bucket policy only grants access
+    when the first path segment equals their uid:
+
+        (storage.foldername(name))[1] = auth.uid()
+
+    A flat `<job_id>.json` key has no folder segment at all, so
+    storage.foldername() returns an empty array, the comparison is NULL, and the
+    policy denies every download. Nesting under `<customer_id>/` is what makes the
+    existing policy match.
+    """
+    prefix = f"{customer_id}/" if customer_id else ""
+    path = f"{prefix}{job_id}.json"
     url = f"{SUPABASE_URL}/storage/v1/object/{RESULTS_BUCKET}/{path}"
     resp = _request(
         "POST",
@@ -237,7 +251,7 @@ def process_job(job):
             )
             inserted += 1
         result_summary = f"Processed {inserted} records"
-        output_file_path = upload_results(job_id, results)
+        output_file_path = upload_results(job_id, results, customer_id)
         update_job(job_id, "completed", output_file_path=output_file_path, result_summary=result_summary)
         notify(customer_id, True)
     except Exception as e:
