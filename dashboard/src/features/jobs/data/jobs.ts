@@ -151,8 +151,18 @@ export function useUploadJob() {
   return { uploadFile, uploadFiles, uploading, error, trialLimitReached, setTrialLimitReached }
 }
 
+// jobs.output_file_path is stored with its bucket prefix ("results/<key>") because
+// the poller returns it that way. The storage API wants the key relative to the
+// bucket, so passing the stored value straight through requested
+// "results/results/<key>" and every download 404'd.
+export function resultObjectKey(outputFilePath: string): string {
+  return outputFilePath.replace(/^results\//, '')
+}
+
 export async function downloadJobResult(outputFilePath: string, filename: string) {
-  const { data, error } = await supabase.storage.from('results').download(outputFilePath)
+  const { data, error } = await supabase.storage
+    .from('results')
+    .download(resultObjectKey(outputFilePath))
   if (error) throw error
   const url = URL.createObjectURL(data)
   const a = document.createElement('a')
