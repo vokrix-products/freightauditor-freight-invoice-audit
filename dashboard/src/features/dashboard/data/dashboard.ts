@@ -34,6 +34,8 @@ const ATTENTION_STATUSES = statuses
   .filter((s) => s.severity === 'critical')
   .map((s) => s.value.toLowerCase())
 
+const UPCOMING_LIMIT = 10
+
 async function fetchDashboardStats(): Promise<DashboardStats> {
   const { data, error } = await supabase
     .from('records')
@@ -70,17 +72,44 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
   }
   const totalPrevWeek = rows.filter(r => new Date(r.created_at) < weekAgo).length
 
-  // Fetch records with due_date in next 90 days, sorted soonest first
+  // Fetch records with due_date in next 90 days, sorted soonest first.
+  // Over-fetch: a rate sheet expands to one record per lane, so 10 raw rows can
+  // be a single expiring sheet. Collapse in memory and trim to the real limit.
   const in90Days = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000).toISOString()
   const { data: upcomingData } = await supabase
     .from('records')
-    .select('id, title, status, due_date')
+    .select('id, title, status, due_date, details')
     .eq('product_id', PRODUCT_ID)
     .not('due_date', 'is', null)
     .gte('due_date', now.toISOString())
     .lte('due_date', in90Days)
     .order('due_date', { ascending: true })
-    .limit(10)
+    .limit(UPCOMING_LIMIT * 5)
+
+  const seenRateSheetKeys = new Set<string>()
+  const upcomingExpirations: UpcomingRecord[] = []
+
+  for (const row of upcomingData ?? []) {
+    // Only rate sheets are collapsed. Two invoices from the same carrier due on
+    // the same day are genuinely different records and must stay separate.
+    const isRateSheet =
+      (row.details as { document_type?: string } | null)?.document_type === 'rate_sheet'
+    const key = isRateSheet
+      ? `rate_sheet|${row.title}|${String(row.due_date).slice(0, 10)}`
+      : `record|${String(row.id)}`
+
+    if (seenRateSheetKeys.has(key)) continue
+    seenRateSheetKeys.add(key)
+
+    upcomingExpirations.push({
+      id: String(row.id),
+      title: row.title,
+      status: row.status,
+      due_date: row.due_date,
+    })
+
+    if (upcomingExpirations.length === UPCOMING_LIMIT) break
+  }
 
   return {
     total: rows.length,
@@ -99,12 +128,7 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
       status: row.status,
       created_at: row.created_at,
     })),
-    upcomingExpirations: (upcomingData ?? []).map((row) => ({
-      id: String(row.id),
-      title: row.title,
-      status: row.status,
-      due_date: row.due_date,
-    })),
+    upcomingExpirations,
   }
 }
 
