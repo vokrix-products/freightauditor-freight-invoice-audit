@@ -18,6 +18,13 @@ function formatDaysUntil(iso: string): { label: string; urgent: boolean } {
   }
 }
 
+function formatLapsed(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+  })
+}
+
 export function UpcomingExpirations() {
   const { data, isLoading } = useDashboardStats()
 
@@ -37,7 +44,14 @@ export function UpcomingExpirations() {
     )
   }
 
-  const items = data?.upcomingExpirations ?? []
+  const upcoming = data?.upcomingExpirations ?? []
+  const lapsed = data?.recentlyExpiredRateSheets ?? []
+
+  // Fallback mode: nothing lapses within the next 90 days, so show the ones
+  // that already have. Without this the card reads empty on every dataset whose
+  // rate schedules are all in the past — which is what it was doing before.
+  const showingLapsed = upcoming.length === 0 && lapsed.length > 0
+  const items = showingLapsed ? lapsed : upcoming
 
   if (items.length === 0) {
     return (
@@ -52,11 +66,18 @@ export function UpcomingExpirations() {
 
   return (
     <div className='space-y-2'>
+      {showingLapsed && (
+        <p className='text-xs text-muted-foreground'>
+          Nothing expiring in the next 90 days — showing the most recently lapsed.
+        </p>
+      )}
       {items.map((record) => {
         const statusDef = statuses.find((s) => s.value === record.status)
         const severity = statusDef?.severity ?? 'neutral'
         const badgeVariant = severityToBadgeVariant[severity]
-        const { label: daysLabel, urgent } = formatDaysUntil(record.due_date)
+        const { label: leadingLabel, urgent } = showingLapsed
+          ? { label: formatLapsed(record.due_date), urgent: false }
+          : formatDaysUntil(record.due_date)
 
         return (
           <div
@@ -71,7 +92,7 @@ export function UpcomingExpirations() {
                     : 'text-xs font-medium text-muted-foreground w-16 shrink-0'
                 }
               >
-                {daysLabel}
+                {leadingLabel}
               </span>
               <span className='text-sm font-medium truncate'>
                 {record.title}

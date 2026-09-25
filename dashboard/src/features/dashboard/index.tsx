@@ -158,12 +158,14 @@ export function Dashboard() {
           </div>
           {/* PRODUCT_CUSTOMIZE: this card only suits products whose records carry
               an expiry/renewal/deadline. Here it is scoped to rate schedules —
-              an invoice's due_date is a payment due date, not an expiry. Remove
-              the card for products that have no such dates. */}
+              an invoice's due_date is a payment due date, not an expiry — and
+              falls back to recently lapsed schedules so it is never empty on a
+              dataset whose sheets are all in the past. Remove the card for
+              products that have no such dates. */}
           <Card>
             <CardHeader>
               <CardTitle>Rate Agreements Expiring</CardTitle>
-              <CardDescription>Carrier rate schedules expiring in the next 90 days</CardDescription>
+              <CardDescription>Carrier rate schedules expiring soon — or already lapsed</CardDescription>
             </CardHeader>
             <CardContent>
               <UpcomingExpirations />

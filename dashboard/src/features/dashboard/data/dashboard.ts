@@ -26,6 +26,7 @@ export interface DashboardStats {
   statusCounts: { status: string; count: number }[]
   recent: DashboardRecord[]
   upcomingExpirations: UpcomingRecord[]
+  recentlyExpiredRateSheets: UpcomingRecord[]
 }
 
 // Derived automatically from statuses with severity='critical' in data.tsx.
@@ -36,19 +37,87 @@ const ATTENTION_STATUSES = statuses
 
 const UPCOMING_LIMIT = 10
 
+interface RecordRow {
+  id: string | number
+  title: string | null
+  status: string | null
+  created_at: string
+  due_date: string | null
+  details: Record<string, unknown> | null
+}
+
+// A rate schedule's expiry is not the same thing as an invoice's payment due
+// date. Rows processed after the processor fallback carry the expiry in
+// `due_date`; rows written before it carry the expiry only inside `details`.
+// Read both, otherwise the card matches nothing on the data we already have.
+function expiryOf(row: RecordRow): string | null {
+  const details: Record<string, unknown> = row.details ?? {}
+  const raw =
+    row.due_date ??
+    (details.expiration_date as string | undefined) ??
+    (details.rate_sheet_expiration_date as string | undefined)
+  if (!raw) return null
+  return String(raw).slice(0, 10)
+}
+
+function toDate(value: string | null): Date | null {
+  if (!value) return null
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+// A rate sheet expands to one record per lane, so collapse those back to a
+// single entry per sheet — an expiring 6-lane sheet shows once, not six times.
+function summariseRateSheets(
+  rows: RecordRow[],
+  keep: (expiry: Date) => boolean,
+  ascending: boolean
+): UpcomingRecord[] {
+  const candidates: { row: RecordRow; expiry: Date; key: string }[] = []
+
+  for (const row of rows) {
+    const iso = expiryOf(row)
+    const expiry = toDate(iso)
+    if (!expiry || !keep(expiry)) continue
+    candidates.push({ row, expiry, key: `${row.title}|${iso}` })
+  }
+
+  candidates.sort((a, b) =>
+    ascending
+      ? a.expiry.getTime() - b.expiry.getTime()
+      : b.expiry.getTime() - a.expiry.getTime()
+  )
+
+  const seen = new Set<string>()
+  const out: UpcomingRecord[] = []
+  for (const { row, expiry, key } of candidates) {
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({
+      id: String(row.id),
+      title: row.title ?? 'Untitled rate schedule',
+      status: row.status ?? 'unknown',
+      due_date: expiry.toISOString(),
+    })
+    if (out.length === UPCOMING_LIMIT) break
+  }
+  return out
+}
+
 async function fetchDashboardStats(): Promise<DashboardStats> {
   const { data, error } = await supabase
     .from('records')
-    .select('id, title, status, created_at')
+    .select('id, title, status, created_at, due_date, details')
     .eq('product_id', PRODUCT_ID)
     .order('created_at', { ascending: false })
 
   if (error) throw error
 
-  const rows = data ?? []
+  const rows = (data ?? []) as RecordRow[]
   const now = new Date()
   const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
   const twoWeeksAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000)
+  const in90Days = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000)
 
   const statusMap = new Map<string, number>()
   let needsAttention = 0
@@ -70,44 +139,26 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
       if (isAttention) needsAttentionPrevWeek += 1
     }
   }
-  const totalPrevWeek = rows.filter(r => new Date(r.created_at) < weekAgo).length
+  const totalPrevWeek = rows.filter((r) => new Date(r.created_at) < weekAgo).length
 
-  // Rate schedules approaching expiry, soonest first, next 90 days only.
-  // Scoped to rate_sheet on purpose: an invoice's due_date is a *payment* due
-  // date, not an expiry, so surfacing both under one "Expirations" heading
-  // would mislead. Over-fetch because a sheet expands to one record per lane:
-  // 10 raw rows can be a single expiring sheet, so collapse below and trim.
-  const in90Days = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000).toISOString()
-  const { data: upcomingData } = await supabase
-    .from('records')
-    .select('id, title, status, due_date')
-    .eq('product_id', PRODUCT_ID)
-    .eq('details->>document_type', 'rate_sheet')
-    .not('due_date', 'is', null)
-    .gte('due_date', now.toISOString())
-    .lte('due_date', in90Days)
-    .order('due_date', { ascending: true })
-    .limit(UPCOMING_LIMIT * 5)
+  // Rate schedules only: an invoice's due_date is a *payment* due date, so
+  // listing both under one "Expirations" heading would mislead.
+  const rateSheets = rows.filter(
+    (r) => (r.details?.document_type as string | undefined) === 'rate_sheet'
+  )
 
-  const seenKeys = new Set<string>()
-  const upcomingExpirations: UpcomingRecord[] = []
+  const upcomingExpirations = summariseRateSheets(
+    rateSheets,
+    (expiry) => expiry >= now && expiry <= in90Days,
+    true
+  )
 
-  for (const row of upcomingData ?? []) {
-    // The query is rate-sheet-only, so collapse the per-lane rows of one sheet
-    // into a single entry: an expiring 6-lane sheet shows once, not six times.
-    const key = `${row.title}|${String(row.due_date).slice(0, 10)}`
-    if (seenKeys.has(key)) continue
-    seenKeys.add(key)
-
-    upcomingExpirations.push({
-      id: String(row.id),
-      title: row.title,
-      status: row.status,
-      due_date: row.due_date,
-    })
-
-    if (upcomingExpirations.length === UPCOMING_LIMIT) break
-  }
+  // Nothing lapses in the next 90 days. Rather than render an empty card, show
+  // the most recently lapsed schedules — still true, still worth knowing.
+  const recentlyExpiredRateSheets =
+    upcomingExpirations.length === 0
+      ? summariseRateSheets(rateSheets, (expiry) => expiry < now, false)
+      : []
 
   return {
     total: rows.length,
@@ -122,11 +173,12 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
     })),
     recent: rows.slice(0, 5).map((row) => ({
       id: String(row.id),
-      title: row.title,
-      status: row.status,
+      title: row.title ?? '',
+      status: row.status ?? 'unknown',
       created_at: row.created_at,
     })),
     upcomingExpirations,
+    recentlyExpiredRateSheets,
   }
 }
 
