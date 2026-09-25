@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { supabase, PRODUCT_ID } from '@/lib/supabase'
+import { toNumber } from '@/lib/format'
 import { statuses } from '@/features/tasks/data/data'
 
 export interface DashboardRecord {
@@ -27,6 +28,16 @@ export interface DashboardStats {
   recent: DashboardRecord[]
   upcomingExpirations: UpcomingRecord[]
   recentlyExpiredRateSheets: UpcomingRecord[]
+  // Rate schedules whose contracted rates have already lapsed. Kept separate
+  // from needsAttention because an expired rate sheet is a different problem
+  // from a flagged invoice, and it drives its own card.
+  expiredCount: number
+  // Money extracted from the invoices we processed. Rate sheets carry no
+  // total, so they contribute nothing. This is what was reviewed, NOT what
+  // was recovered — no invoice-vs-rate-sheet comparison has run, so there is
+  // no overcharge figure to show.
+  sumCharges: number
+  recordsWithCharges: number
 }
 
 // Derived automatically from statuses with severity='critical' in data.tsx.
@@ -34,6 +45,9 @@ export interface DashboardStats {
 const ATTENTION_STATUSES = statuses
   .filter((s) => s.severity === 'critical')
   .map((s) => s.value.toLowerCase())
+
+// 'expired:warning' is this product's rate-sheet expiry status (see data.tsx).
+const EXPIRED_STATUS = 'expired:warning'
 
 const UPCOMING_LIMIT = 10
 
@@ -124,6 +138,9 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
   let addedThisWeek = 0
   let addedPrevWeek = 0
   let needsAttentionPrevWeek = 0
+  let expiredCount = 0
+  let sumCharges = 0
+  let recordsWithCharges = 0
 
   for (const row of rows) {
     const status = row.status ?? 'unknown'
@@ -132,11 +149,18 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
     const isAttention = ATTENTION_STATUSES.includes(status.toLowerCase())
 
     if (isAttention) needsAttention += 1
+    if (status.toLowerCase() === EXPIRED_STATUS) expiredCount += 1
     if (createdAt >= weekAgo) {
       addedThisWeek += 1
     } else if (createdAt >= twoWeeksAgo) {
       addedPrevWeek += 1
       if (isAttention) needsAttentionPrevWeek += 1
+    }
+
+    const charges = toNumber(row.details?.total_charges)
+    if (charges !== null) {
+      sumCharges += charges
+      recordsWithCharges += 1
     }
   }
   const totalPrevWeek = rows.filter((r) => new Date(r.created_at) < weekAgo).length
@@ -179,6 +203,9 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
     })),
     upcomingExpirations,
     recentlyExpiredRateSheets,
+    expiredCount,
+    sumCharges,
+    recordsWithCharges,
   }
 }
 
