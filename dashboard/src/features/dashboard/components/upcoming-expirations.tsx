@@ -45,7 +45,7 @@ export function UpcomingExpirations() {
         <svg width='28' height='28' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.5' strokeLinecap='round' strokeLinejoin='round' className='text-muted-foreground/40'>
           <path d='M8 2v4m8-4v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z'/>
         </svg>
-        <p className='text-sm text-muted-foreground'>Nothing expiring in the next 90 days.</p>
+        <p className='text-sm text-muted-foreground'>No rate schedules expiring in the next 90 days.</p>
       </div>
     )
   }

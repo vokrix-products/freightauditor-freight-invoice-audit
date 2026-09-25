@@ -72,34 +72,32 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
   }
   const totalPrevWeek = rows.filter(r => new Date(r.created_at) < weekAgo).length
 
-  // Fetch records with due_date in next 90 days, sorted soonest first.
-  // Over-fetch: a rate sheet expands to one record per lane, so 10 raw rows can
-  // be a single expiring sheet. Collapse in memory and trim to the real limit.
+  // Rate schedules approaching expiry, soonest first, next 90 days only.
+  // Scoped to rate_sheet on purpose: an invoice's due_date is a *payment* due
+  // date, not an expiry, so surfacing both under one "Expirations" heading
+  // would mislead. Over-fetch because a sheet expands to one record per lane:
+  // 10 raw rows can be a single expiring sheet, so collapse below and trim.
   const in90Days = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000).toISOString()
   const { data: upcomingData } = await supabase
     .from('records')
-    .select('id, title, status, due_date, details')
+    .select('id, title, status, due_date')
     .eq('product_id', PRODUCT_ID)
+    .eq('details->>document_type', 'rate_sheet')
     .not('due_date', 'is', null)
     .gte('due_date', now.toISOString())
     .lte('due_date', in90Days)
     .order('due_date', { ascending: true })
     .limit(UPCOMING_LIMIT * 5)
 
-  const seenRateSheetKeys = new Set<string>()
+  const seenKeys = new Set<string>()
   const upcomingExpirations: UpcomingRecord[] = []
 
   for (const row of upcomingData ?? []) {
-    // Only rate sheets are collapsed. Two invoices from the same carrier due on
-    // the same day are genuinely different records and must stay separate.
-    const isRateSheet =
-      (row.details as { document_type?: string } | null)?.document_type === 'rate_sheet'
-    const key = isRateSheet
-      ? `rate_sheet|${row.title}|${String(row.due_date).slice(0, 10)}`
-      : `record|${String(row.id)}`
-
-    if (seenRateSheetKeys.has(key)) continue
-    seenRateSheetKeys.add(key)
+    // The query is rate-sheet-only, so collapse the per-lane rows of one sheet
+    // into a single entry: an expiring 6-lane sheet shows once, not six times.
+    const key = `${row.title}|${String(row.due_date).slice(0, 10)}`
+    if (seenKeys.has(key)) continue
+    seenKeys.add(key)
 
     upcomingExpirations.push({
       id: String(row.id),
