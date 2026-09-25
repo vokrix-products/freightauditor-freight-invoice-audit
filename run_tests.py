@@ -1,4 +1,9 @@
-from processor import _expand_rate_lanes, _normalize_row, process_file
+from processor import (
+    _expand_rate_lanes,
+    _normalize_row,
+    apply_cross_upload_duplicates,
+    process_file,
+)
 
 
 def _csv(value: str) -> bytes:
@@ -163,6 +168,73 @@ def test_rate_sheet_lanes_expand_to_rate_lines():
     assert all(line["carrier_name"] == "Carrier G" for line in lines)
 
 
+def test_rate_sheet_with_minimum_charge_is_not_flagged():
+    # Regression: a "minimum charge above 3x base rate" rule compared a flat
+    # dollar minimum ($150.00) against a rate expressed per 100 lbs ($5.50), so
+    # 150 > 5.50 * 3 fired on every rate sheet carrying a minimum charge and
+    # pushed it to contract-review:warning. These are the real Redwood Freight
+    # Systems values from records 20029 / 20030.
+    data = _csv(
+        "carrier_name,effective_date,expiration_date,rate_basis,minimum_charge,base_rate,fuel_surcharge_table\n"
+        "Redwood Freight Systems,2026-01-01,2026-11-30,per 100 lbs,150.00,5.50,table\n"
+    )
+    records = process_file(data)
+    assert len(records) == 1
+    assert records[0]["status"] == "valid:good"
+
+
+def test_cross_upload_duplicate_is_flagged():
+    # Regression: records 20031 / 20032 are the same invoice number uploaded
+    # twice. The per-file check cannot see the second upload, so both came back
+    # valid:good. Numbers are the real Redwood Freight Systems invoice.
+    data = _csv(
+        "invoice_number,carrier_name,ship_date,freight_charge,fuel_surcharge,accessorial_charges,total_charges\n"
+        "INV-2026-11487,Redwood Freight Systems,2026-09-15,1095.20,197.12,511.12,1606.32\n"
+    )
+    records = process_file(data)
+    assert len(records) == 1
+    assert records[0]["status"] == "valid:good"
+
+    flagged = apply_cross_upload_duplicates(records, {"INV-2026-11487"})
+    assert flagged[0]["status"] == "flagged:critical"
+    assert "duplicate invoice number from a previous upload" in flagged[0]["details"]["_notes"]
+
+
+def test_cross_upload_duplicate_leaves_new_invoices_alone():
+    data = _csv(
+        "invoice_number,carrier_name,ship_date,freight_charge,total_charges\n"
+        "INV-2026-99001,Carrier H,2026-09-15,100.00,100.00\n"
+    )
+    records = process_file(data)
+    unflagged = apply_cross_upload_duplicates(records, {"INV-2026-11487"})
+    assert unflagged[0]["status"] == "valid:good"
+    assert unflagged[0]["details"]["_notes"] == []
+
+    empty_history = apply_cross_upload_duplicates(records, set())
+    assert empty_history[0]["status"] == "valid:good"
+
+
+def test_cross_upload_duplicate_keeps_existing_notes():
+    # A missing-field reason must survive alongside the duplicate reason.
+    records = [
+        {
+            "title": "Carrier I",
+            "status": "missing:critical",
+            "details": {
+                "invoice_number": "INV-2026-11487",
+                "_notes": ["missing required fields: ship_date"],
+            },
+            "due_date": None,
+        }
+    ]
+    flagged = apply_cross_upload_duplicates(records, {"INV-2026-11487"})
+    assert flagged[0]["status"] == "flagged:critical"
+    assert flagged[0]["details"]["_notes"] == [
+        "missing required fields: ship_date",
+        "duplicate invoice number from a previous upload",
+    ]
+
+
 if __name__ == "__main__":
     test_invoice_valid()
     test_invoice_missing()
@@ -175,4 +247,8 @@ if __name__ == "__main__":
     test_unknown_text()
     test_rate_sheet_ignores_blank_invoice_columns()
     test_rate_sheet_lanes_expand_to_rate_lines()
+    test_rate_sheet_with_minimum_charge_is_not_flagged()
+    test_cross_upload_duplicate_is_flagged()
+    test_cross_upload_duplicate_leaves_new_invoices_alone()
+    test_cross_upload_duplicate_keeps_existing_notes()
     print("all tests passed")

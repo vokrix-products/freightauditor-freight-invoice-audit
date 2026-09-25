@@ -347,11 +347,13 @@ def _assign_status(record: Dict[str, Any], all_rows: List[Dict[str, Any]]):
         if expiration and expiration < date.today():
             return STATUS_EXPIRED, ["rate sheet expired"]
 
-        base_rate = record.get("base_rate")
-        minimum_charge = record.get("minimum_charge")
-        if base_rate is not None and minimum_charge is not None:
-            if float(minimum_charge) > float(base_rate) * 3:
-                return STATUS_CONTRACT_REVIEW, ["minimum charge is above base-rate threshold"]
+        # A "minimum charge above 3x base rate" rule used to live here. It
+        # compared a flat dollar minimum ($150.00) against a rate expressed per
+        # 100 lbs ($5.50), so 150 > 5.50 * 3 fired on every rate sheet carrying a
+        # minimum charge and pushed it to contract-review. It stayed hidden while
+        # every sheet on hand was expired, because the expiry branch returns
+        # first. Removed rather than re-tuned: the two figures are in different
+        # units, so there is no threshold that makes the comparison sound.
 
         rate_key = (
             record.get("origin_zone_zip_postal"),
@@ -379,6 +381,67 @@ def _assign_status(record: Dict[str, Any], all_rows: List[Dict[str, Any]]):
         return STATUS_VALID, []
 
     return STATUS_UNMAPPED, ["unable to identify document type"]
+
+
+DUPLICATE_UPLOAD_NOTE = "duplicate invoice number from a previous upload"
+
+
+def apply_cross_upload_duplicates(
+    result_records: List[Dict[str, Any]],
+    existing_invoice_numbers: Any,
+) -> List[Dict[str, Any]]:
+    """Flag records whose invoice number this customer has already had processed.
+
+    The duplicate check inside _assign_status can only see the rows produced by a
+    single process_file call, so a carrier billing the same invoice number across
+    two separate uploads was never caught - which is precisely the overbilling a
+    shipper wants surfaced. The poller passes in the invoice numbers already
+    stored for that customer and anything that repeats comes back flagged.
+
+    Kept as a pure function over the caller's data: the poller owns the customer
+    scope and the database access, this owns the decision. A duplicate overrides
+    valid/expired but never discards the existing notes, so a missing-field
+    reason stays visible alongside the duplicate reason.
+    """
+    existing = {
+        str(value).strip()
+        for value in (existing_invoice_numbers or [])
+        if value is not None
+    }
+    existing.discard("")
+    if not existing:
+        return result_records
+
+    updated_records: List[Dict[str, Any]] = []
+    for item in result_records:
+        if not isinstance(item, dict):
+            updated_records.append(item)
+            continue
+
+        details = item.get("details")
+        if not isinstance(details, dict):
+            updated_records.append(item)
+            continue
+
+        invoice_number = details.get("invoice_number")
+        if invoice_number is None or not str(invoice_number).strip():
+            updated_records.append(item)
+            continue
+
+        if str(invoice_number).strip() not in existing:
+            updated_records.append(item)
+            continue
+
+        notes = list(details.get("_notes") or [])
+        if DUPLICATE_UPLOAD_NOTE not in notes:
+            notes.append(DUPLICATE_UPLOAD_NOTE)
+
+        updated = dict(item)
+        updated["details"] = {**details, "_notes": notes}
+        updated["status"] = STATUS_FLAGGED
+        updated_records.append(updated)
+
+    return updated_records
 
 
 def _try_pdf(file_bytes: bytes) -> List[Dict[str, Any]]:
