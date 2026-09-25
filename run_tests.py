@@ -39,6 +39,45 @@ def test_invoice_duplicate():
     assert all(record["status"] == "flagged:critical" for record in records)
 
 
+def test_invoice_fuel_nested_inside_accessorials():
+    # Regression: INV-2024-89341 lays the fuel surcharge out as the first line of
+    # the accessorial subtotal, so freight + fuel + accessorials counts the fuel
+    # twice and a correct invoice came back flagged:critical as overbilling.
+    # Line items 781.25 + 180.00 + 49.20 = 1010.45 (Transportation Charges).
+    # Accessorials 171.88 + 65.00 + 195.31 + 25.00 = 457.19.
+    # Total 1010.45 + 457.19 = 1467.64.
+    data = _csv(
+        "invoice_number,carrier_name,ship_date,freight_charge,fuel_surcharge,accessorial_charges,total_charges\n"
+        "INV-2024-89341,Pacific Crest Freight Lines,2024-03-12,1010.45,171.88,457.19,1467.64\n"
+    )
+    records = process_file(data)
+    assert len(records) == 1
+    assert records[0]["status"] == "valid:good"
+
+
+def test_invoice_separate_fuel_component_still_validates():
+    # The other layout: fuel is its own line beside the accessorial subtotal and
+    # all three components do add up to the total.
+    data = _csv(
+        "invoice_number,carrier_name,ship_date,freight_charge,fuel_surcharge,accessorial_charges,total_charges\n"
+        "INV-2024-88421,Summit Freight Logistics Inc.,2024-11-12,4162.50,1019.81,130.00,5312.31\n"
+    )
+    records = process_file(data)
+    assert len(records) == 1
+    assert records[0]["status"] == "valid:good"
+
+
+def test_invoice_total_mismatch_still_flags():
+    # The check must still catch a genuine variance under either decomposition.
+    data = _csv(
+        "invoice_number,carrier_name,ship_date,freight_charge,fuel_surcharge,accessorial_charges,total_charges\n"
+        "INV-9,Carrier Z,2025-04-01,1000.00,220.00,130.00,9999.00\n"
+    )
+    records = process_file(data)
+    assert len(records) == 1
+    assert records[0]["status"] == "flagged:critical"
+
+
 def test_rate_sheet_valid():
     # Expiration kept in the future on purpose: this fixture was pinned to
     # 2026-01-01, so the moment that date passed the test asserted valid:good
@@ -128,6 +167,9 @@ if __name__ == "__main__":
     test_invoice_valid()
     test_invoice_missing()
     test_invoice_duplicate()
+    test_invoice_fuel_nested_inside_accessorials()
+    test_invoice_separate_fuel_component_still_validates()
+    test_invoice_total_mismatch_still_flags()
     test_rate_sheet_valid()
     test_rate_sheet_expired()
     test_unknown_text()

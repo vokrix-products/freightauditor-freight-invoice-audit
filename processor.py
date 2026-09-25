@@ -297,11 +297,28 @@ def _assign_status(record: Dict[str, Any], all_rows: List[Dict[str, Any]]):
             return STATUS_FLAGGED, ["duplicate invoice number in file"]
 
         total = record.get("total_charges")
-        component_fields = ["freight_charge", "fuel_surcharge", "accessorial_charges"]
-        components = [record.get(field) for field in component_fields if record.get(field) is not None]
-        if total is not None and components:
-            expected_total = sum(components)
-            if abs(float(total) - expected_total) > FLOAT_TOLERANCE:
+        freight = record.get("freight_charge")
+        fuel = record.get("fuel_surcharge")
+        accessorial = record.get("accessorial_charges")
+        if total is not None:
+            # Carriers lay the total out two different ways. Sometimes the fuel
+            # surcharge is its own line beside the accessorial subtotal, so all
+            # three components add up to the total. Sometimes fuel is the first
+            # line INSIDE the accessorial subtotal, so adding it a second time
+            # counts it twice and reports a correct invoice as overbilling -
+            # the worst false positive an audit product can produce. Accept
+            # either decomposition; a real mismatch still fails both.
+            separated = [
+                value for value in (freight, fuel, accessorial) if value is not None
+            ]
+            candidates: List[float] = []
+            if separated:
+                candidates.append(sum(separated))
+            if freight is not None and accessorial is not None and fuel is not None:
+                candidates.append(float(freight) + float(accessorial))
+            if candidates and all(
+                abs(float(total) - candidate) > FLOAT_TOLERANCE for candidate in candidates
+            ):
                 return STATUS_FLAGGED, ["total charges do not match freight+fuel+accessorial"]
 
         variance_pairs = [
