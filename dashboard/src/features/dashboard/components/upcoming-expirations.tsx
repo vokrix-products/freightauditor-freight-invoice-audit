@@ -19,9 +19,12 @@ function formatDaysUntil(iso: string): { label: string; urgent: boolean } {
 }
 
 function formatLapsed(iso: string): string {
+  // Include the year: these dates are in the past, so a bare "Mar 31" under an
+  // "Expiring" heading reads as upcoming when it actually lapsed last year.
   return new Date(iso).toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
+    year: 'numeric',
   })
 }
 
@@ -88,8 +91,8 @@ export function UpcomingExpirations() {
               <span
                 className={
                   urgent
-                    ? 'text-xs font-semibold text-destructive w-16 shrink-0'
-                    : 'text-xs font-medium text-muted-foreground w-16 shrink-0'
+                    ? 'text-xs font-semibold text-destructive w-20 shrink-0 whitespace-nowrap'
+                    : 'text-xs font-medium text-muted-foreground w-20 shrink-0 whitespace-nowrap'
                 }
               >
                 {leadingLabel}
