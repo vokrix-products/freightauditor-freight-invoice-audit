@@ -140,6 +140,43 @@ def release_stale_claims():
         print(f"released {len(released)} stale claim(s)", flush=True)
 
 
+def fetch_existing_invoice_numbers(customer_id, exclude_source_file_path=None):
+    """Invoice numbers this customer has already had processed.
+
+    Cross-upload duplicate detection needs history the processor cannot see: it
+    only ever receives one file. Scoped to a single customer, because the same
+    invoice number appearing under two different accounts is not a duplicate.
+
+    Records written from the file currently being processed are skipped, so
+    re-running a job does not flag its own previous output as a duplicate of
+    itself.
+
+    Note: PostgREST caps a single select at 1000 rows. A customer past that mark
+    would have some history invisible here.
+    """
+    params = {
+        "product_id": f"eq.{PRODUCT_ID}",
+        "customer_id": f"eq.{customer_id}",
+        "select": "details,source_file_path",
+    }
+    resp = _request(
+        "GET",
+        f"{SUPABASE_URL}/rest/v1/records",
+        headers=supabase_headers(),
+        params=params,
+    )
+
+    numbers = set()
+    for row in resp.json():
+        if exclude_source_file_path and row.get("source_file_path") == exclude_source_file_path:
+            continue
+        details = row.get("details") or {}
+        invoice_number = details.get("invoice_number")
+        if invoice_number is not None and str(invoice_number).strip():
+            numbers.add(str(invoice_number).strip())
+    return numbers
+
+
 def upload_results(job_id, results, customer_id=None):
     """Upload the result file into the owning customer's folder.
 
@@ -223,6 +260,18 @@ def process_job(job):
         results = processor.process_file(file_bytes)
         if not isinstance(results, list):
             raise ValueError("processor.process_file must return a list")
+
+        # Duplicate history is a nice-to-have, not a reason to fail an upload: if
+        # the lookup is unavailable we process normally rather than losing the job.
+        try:
+            existing_invoices = fetch_existing_invoice_numbers(
+                customer_id, exclude_source_file_path=file_path
+            )
+        except Exception as error:
+            print(f"job {job_id}: duplicate lookup failed, continuing without it: {error}", flush=True)
+            existing_invoices = set()
+        results = processor.apply_cross_upload_duplicates(results, existing_invoices)
+
         inserted = 0
         for item in results:
             if not isinstance(item, dict):
