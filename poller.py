@@ -16,6 +16,16 @@ MAX_ATTEMPTS = 3
 POLL_INTERVAL_SECONDS = 60
 STALE_CLAIM_MINUTES = 15
 
+# PostgREST returns at most 1000 rows per select. Anything larger has to be
+# paged, otherwise older rows are silently invisible to the caller.
+HISTORY_PAGE_SIZE = 1000
+
+# U.S. No 2 Diesel Retail Prices, weekly, dollars per gallon. The audit needs the
+# price that applied when the shipment moved, so it takes the most recent weekly
+# period on or before the invoice ship date.
+EIA_SERIES_ID = 'PET.EMD_EPD2D_PTE_NUS_DPG.W'
+EIA_URL = 'https://api.eia.gov/v2/seriesid/'
+
 VALID_STATUSES = {
     'missing:critical',
     'expired:warning',
@@ -26,6 +36,7 @@ VALID_STATUSES = {
 }
 
 import processor
+import rate_audit
 
 
 def _now_iso():
@@ -140,6 +151,39 @@ def release_stale_claims():
         print(f"released {len(released)} stale claim(s)", flush=True)
 
 
+def _paged_records(customer_id, select):
+    """Every record row for one customer, oldest first.
+
+    PostgREST caps a single select at 1000 rows, so a customer past that mark
+    would otherwise have older rows silently invisible to the caller.
+    """
+    rows = []
+    offset = 0
+
+    while True:
+        params = {
+            "product_id": f"eq.{PRODUCT_ID}",
+            "customer_id": f"eq.{customer_id}",
+            "select": select,
+            "limit": str(HISTORY_PAGE_SIZE),
+            "offset": str(offset),
+            "order": "id.asc",
+        }
+        resp = _request(
+            "GET",
+            f"{SUPABASE_URL}/rest/v1/records",
+            headers=supabase_headers(),
+            params=params,
+        )
+        page = resp.json()
+        rows.extend(page)
+        if len(page) < HISTORY_PAGE_SIZE:
+            break
+        offset += HISTORY_PAGE_SIZE
+
+    return rows
+
+
 def fetch_existing_invoice_numbers(customer_id, exclude_source_file_path=None):
     """Invoice numbers this customer has already had processed.
 
@@ -150,31 +194,123 @@ def fetch_existing_invoice_numbers(customer_id, exclude_source_file_path=None):
     Records written from the file currently being processed are skipped, so
     re-running a job does not flag its own previous output as a duplicate of
     itself.
-
-    Note: PostgREST caps a single select at 1000 rows. A customer past that mark
-    would have some history invisible here.
     """
-    params = {
-        "product_id": f"eq.{PRODUCT_ID}",
-        "customer_id": f"eq.{customer_id}",
-        "select": "details,source_file_path",
-    }
-    resp = _request(
-        "GET",
-        f"{SUPABASE_URL}/rest/v1/records",
-        headers=supabase_headers(),
-        params=params,
-    )
-
     numbers = set()
-    for row in resp.json():
+
+    for row in _paged_records(customer_id, "details,source_file_path"):
         if exclude_source_file_path and row.get("source_file_path") == exclude_source_file_path:
             continue
         details = row.get("details") or {}
         invoice_number = details.get("invoice_number")
         if invoice_number is not None and str(invoice_number).strip():
             numbers.add(str(invoice_number).strip())
+
     return numbers
+
+
+def fetch_rate_lines(customer_id):
+    """Contracted rate lines this customer has on file.
+
+    Filtered on details.document_type after the fetch rather than with a
+    PostgREST JSON path filter: a rejected JSON operator returns an empty set,
+    which would silently make every invoice look like it had no contracted lane
+    to audit against.
+    """
+    lines = []
+
+    for row in _paged_records(customer_id, "title,details"):
+        details = row.get("details") or {}
+        if not isinstance(details, dict) or details.get("document_type") != "rate_sheet":
+            continue
+        line = dict(details)
+        line.setdefault("title", row.get("title"))
+        lines.append(line)
+
+    return lines
+
+
+_DIESEL_PRICE_CACHE = {}
+
+
+def diesel_price_for(ship_date):
+    """U.S. No 2 Diesel retail price for the week of the shipment.
+
+    EIA publishes the series weekly, most recent first, with the period as the
+    week-ending Monday. The audit takes the most recent period on or before the
+    ship date.
+
+    Returns None - never a guess - when the ship date is unknown, the key is
+    unset, or the lookup fails. An unknown market price means the fuel surcharge
+    cannot be audited, which the audit reports as contract-review rather than
+    inventing a figure from the wrong week.
+    """
+    if ship_date is None:
+        return None
+    if ship_date in _DIESEL_PRICE_CACHE:
+        return _DIESEL_PRICE_CACHE[ship_date]
+
+    price = None
+    api_key = (os.environ.get('EIA_API_KEY') or '').strip()
+
+    if api_key:
+        try:
+            resp = _request(
+                "GET",
+                f"{EIA_URL}{EIA_SERIES_ID}",
+                headers={},
+                params={"api_key": api_key},
+            )
+            points = (resp.json().get("response") or {}).get("data") or []
+            for point in points:
+                period = point.get("period")
+                value = point.get("value")
+                if period is None or value is None:
+                    continue
+                if str(period) <= str(ship_date):
+                    price = float(value)
+                    break
+        except Exception as error:
+            print(f"EIA diesel lookup failed: {error}", flush=True)
+
+    _DIESEL_PRICE_CACHE[ship_date] = price
+    return price
+
+
+def delete_prior_records(customer_id, file_path):
+    """Remove records from an earlier run of the same file.
+
+    Re-processing a job used to insert a second set of rows and leave the first
+    ones behind, so every re-run doubled that file's records on the dashboard.
+
+    Records with approved_at set are exempt: that column marks a record a user
+    approved for TMS export, and silently deleting an approved record would
+    destroy work. When any row for the file is approved, both sets are kept and
+    the caller is told, rather than guessing which one the user meant.
+    """
+    base = {
+        "product_id": f"eq.{PRODUCT_ID}",
+        "customer_id": f"eq.{customer_id}",
+        "source_file_path": f"eq.{file_path}",
+    }
+
+    approved = _request(
+        "GET",
+        f"{SUPABASE_URL}/rest/v1/records",
+        headers=supabase_headers(),
+        params={**base, "approved_at": "not.is.null", "select": "id", "limit": "1"},
+    ).json()
+
+    if approved:
+        print(f"prior records for {file_path} are approved; keeping both sets", flush=True)
+        return False
+
+    _request(
+        "DELETE",
+        f"{SUPABASE_URL}/rest/v1/records",
+        headers=supabase_headers(),
+        params=base,
+    )
+    return True
 
 
 def upload_results(job_id, results, customer_id=None):
@@ -271,6 +407,29 @@ def process_job(job):
             print(f"job {job_id}: duplicate lookup failed, continuing without it: {error}", flush=True)
             existing_invoices = set()
         results = processor.apply_cross_upload_duplicates(results, existing_invoices)
+
+        # Compare each invoice against the customer's contracted rate lines. Runs
+        # after duplicate detection so a flagged duplicate is never downgraded to
+        # a contract-review finding, and before the insert so the stored record
+        # carries the audit in one write.
+        try:
+            rate_lines = fetch_rate_lines(customer_id)
+        except Exception as error:
+            print(f"job {job_id}: rate line lookup failed, continuing without audit: {error}", flush=True)
+            rate_lines = []
+        if rate_lines:
+            try:
+                results = rate_audit.apply_rate_audit(results, rate_lines, diesel_price_for)
+            except Exception as error:
+                print(f"job {job_id}: rate audit failed, continuing: {error}", flush=True)
+
+        # Replace the previous run of this same file, so re-processing a job does
+        # not leave two sets of records on the dashboard. Skipped when a record
+        # from the earlier run was approved by a user.
+        try:
+            delete_prior_records(customer_id, file_path)
+        except Exception as error:
+            print(f"job {job_id}: could not clear prior records, continuing: {error}", flush=True)
 
         inserted = 0
         for item in results:
