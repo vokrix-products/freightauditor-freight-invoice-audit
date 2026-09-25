@@ -13,7 +13,8 @@ import { Search } from '@/components/search'
 import { ThemeSwitch } from '@/components/theme-switch'
 import { JobsCard } from '@/features/jobs/components/jobs-card'
 import { NotificationsBell } from '@/components/notifications-bell'
-import { PRODUCT_ARCHETYPE } from '@/product-config'
+import { PRODUCT_ARCHETYPE, RECORDS_LABEL } from '@/product-config'
+import { formatCurrency } from '@/lib/format'
 import { ReportCard } from './components/report-card'
 import { Overview } from './components/overview'
 import { RecentActivity } from './components/recent-activity'
@@ -35,9 +36,9 @@ function Trend({ current, previous }: { current: number; previous: number }) {
   )
 }
 
-// PRODUCT_CUSTOMIZE: card titles/icons below describe generic record
-// tracking. Rename "Records" / "Needs Attention" to match this product's
-// domain (e.g. "Certificates" / "Expired").
+// PRODUCT_CUSTOMIZE: these four cards are written for a document-audit
+// product — volume, what needs a human, what has lapsed, and the money
+// reviewed. Retitle to match the domain if the product tracks something else.
 export function Dashboard() {
   const { data, isLoading } = useDashboardStats()
   const [showUpgradeBanner, setShowUpgradeBanner] = useState(false)
@@ -54,6 +55,9 @@ export function Dashboard() {
     await supabase.auth.refreshSession()
     window.location.reload()
   }
+
+  const chargesLabel = data ? formatCurrency(data.sumCharges) : null
+  const chargedRecords = data?.recordsWithCharges ?? 0
 
   return (
     <>
@@ -84,10 +88,10 @@ export function Dashboard() {
         <div className='space-y-4'>
           <JobsCard />
           {PRODUCT_ARCHETYPE === 'report' && <ReportCard />}
-          <div className='grid gap-4 sm:grid-cols-3'>
+          <div className='grid gap-4 sm:grid-cols-2 lg:grid-cols-4'>
             <Card>
               <CardHeader className='flex flex-row items-center justify-between space-y-0 pb-2'>
-                <CardTitle className='text-sm font-medium'>Total Records</CardTitle>
+                <CardTitle className='text-sm font-medium'>{RECORDS_LABEL}</CardTitle>
               </CardHeader>
               <CardContent>
                 {isLoading ? (
@@ -104,7 +108,7 @@ export function Dashboard() {
             </Card>
             <Card>
               <CardHeader className='flex flex-row items-center justify-between space-y-0 pb-2'>
-                <CardTitle className='text-sm font-medium'>Needs Attention</CardTitle>
+                <CardTitle className='text-sm font-medium'>Flagged for Review</CardTitle>
               </CardHeader>
               <CardContent>
                 {isLoading ? (
@@ -114,24 +118,49 @@ export function Dashboard() {
                     <div className='text-2xl font-bold tracking-tight text-destructive'>
                       <NumberTicker value={data?.needsAttention ?? 0} />
                     </div>
-                    <Trend current={data?.needsAttention ?? 0} previous={data?.needsAttentionPrevWeek ?? 0} />
+                    <p className='text-xs text-muted-foreground'>
+                      Errors or overbilling detected
+                    </p>
                   </>
                 )}
               </CardContent>
             </Card>
             <Card>
               <CardHeader className='flex flex-row items-center justify-between space-y-0 pb-2'>
-                <CardTitle className='text-sm font-medium'>Added This Week</CardTitle>
+                <CardTitle className='text-sm font-medium'>Rate Agreements Expired</CardTitle>
               </CardHeader>
               <CardContent>
                 {isLoading ? (
                   <Skeleton className='h-8 w-16' />
                 ) : (
                   <>
-                    <div className='text-2xl font-bold tracking-tight'>
-                      <NumberTicker value={data?.addedThisWeek ?? 0} />
+                    <div className='text-2xl font-bold tracking-tight text-warning'>
+                      <NumberTicker value={data?.expiredCount ?? 0} />
                     </div>
-                    <Trend current={data?.addedThisWeek ?? 0} previous={data?.addedPrevWeek ?? 0} />
+                    <p className='text-xs text-muted-foreground'>
+                      Audits run against stale rates
+                    </p>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className='flex flex-row items-center justify-between space-y-0 pb-2'>
+                <CardTitle className='text-sm font-medium'>Charges Reviewed</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {isLoading ? (
+                  <Skeleton className='h-8 w-24' />
+                ) : (
+                  <>
+                    <div className='text-2xl font-bold tracking-tight'>
+                      {chargesLabel ?? '—'}
+                    </div>
+                    <p className='text-xs text-muted-foreground'>
+                      {chargedRecords === 1
+                        ? 'across 1 invoice'
+                        : `across ${chargedRecords} invoices`}
+                    </p>
                   </>
                 )}
               </CardContent>
