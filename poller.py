@@ -16,6 +16,10 @@ MAX_ATTEMPTS = 3
 POLL_INTERVAL_SECONDS = 60
 STALE_CLAIM_MINUTES = 15
 
+# PostgREST returns at most 1000 rows per select. Anything larger has to be
+# paged, otherwise older rows are silently invisible to the caller.
+HISTORY_PAGE_SIZE = 1000
+
 VALID_STATUSES = {
     'missing:critical',
     'expired:warning',
@@ -151,30 +155,80 @@ def fetch_existing_invoice_numbers(customer_id, exclude_source_file_path=None):
     re-running a job does not flag its own previous output as a duplicate of
     itself.
 
-    Note: PostgREST caps a single select at 1000 rows. A customer past that mark
-    would have some history invisible here.
+    Paged. PostgREST caps a single select at 1000 rows, so a customer past that
+    mark would otherwise have older invoice numbers silently invisible here and
+    dedup would quietly stop catching them.
     """
-    params = {
+    numbers = set()
+    offset = 0
+
+    while True:
+        params = {
+            "product_id": f"eq.{PRODUCT_ID}",
+            "customer_id": f"eq.{customer_id}",
+            "select": "details,source_file_path",
+            "limit": str(HISTORY_PAGE_SIZE),
+            "offset": str(offset),
+            "order": "id.asc",
+        }
+        resp = _request(
+            "GET",
+            f"{SUPABASE_URL}/rest/v1/records",
+            headers=supabase_headers(),
+            params=params,
+        )
+        rows = resp.json()
+
+        for row in rows:
+            if exclude_source_file_path and row.get("source_file_path") == exclude_source_file_path:
+                continue
+            details = row.get("details") or {}
+            invoice_number = details.get("invoice_number")
+            if invoice_number is not None and str(invoice_number).strip():
+                numbers.add(str(invoice_number).strip())
+
+        if len(rows) < HISTORY_PAGE_SIZE:
+            break
+        offset += HISTORY_PAGE_SIZE
+
+    return numbers
+
+
+def delete_prior_records(customer_id, file_path):
+    """Remove records from an earlier run of the same file.
+
+    Re-processing a job used to insert a second set of rows and leave the first
+    ones behind, so every re-run doubled that file's records on the dashboard.
+
+    Records with approved_at set are exempt: that column marks a record a user
+    approved for TMS export, and silently deleting an approved record would
+    destroy work. When any row for the file is approved, both sets are kept and
+    the caller is told, rather than guessing which one the user meant.
+    """
+    base = {
         "product_id": f"eq.{PRODUCT_ID}",
         "customer_id": f"eq.{customer_id}",
-        "select": "details,source_file_path",
+        "source_file_path": f"eq.{file_path}",
     }
-    resp = _request(
+
+    approved = _request(
         "GET",
         f"{SUPABASE_URL}/rest/v1/records",
         headers=supabase_headers(),
-        params=params,
-    )
+        params={**base, "approved_at": "not.is.null", "select": "id", "limit": "1"},
+    ).json()
 
-    numbers = set()
-    for row in resp.json():
-        if exclude_source_file_path and row.get("source_file_path") == exclude_source_file_path:
-            continue
-        details = row.get("details") or {}
-        invoice_number = details.get("invoice_number")
-        if invoice_number is not None and str(invoice_number).strip():
-            numbers.add(str(invoice_number).strip())
-    return numbers
+    if approved:
+        print(f"prior records for {file_path} are approved; keeping both sets", flush=True)
+        return False
+
+    _request(
+        "DELETE",
+        f"{SUPABASE_URL}/rest/v1/records",
+        headers=supabase_headers(),
+        params=base,
+    )
+    return True
 
 
 def upload_results(job_id, results, customer_id=None):
@@ -271,6 +325,14 @@ def process_job(job):
             print(f"job {job_id}: duplicate lookup failed, continuing without it: {error}", flush=True)
             existing_invoices = set()
         results = processor.apply_cross_upload_duplicates(results, existing_invoices)
+
+        # Replace the previous run of this same file, so re-processing a job does
+        # not leave two sets of records on the dashboard. Skipped when a record
+        # from the earlier run was approved by a user.
+        try:
+            delete_prior_records(customer_id, file_path)
+        except Exception as error:
+            print(f"job {job_id}: could not clear prior records, continuing: {error}", flush=True)
 
         inserted = 0
         for item in results:
