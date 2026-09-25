@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { DataTableColumnHeader } from '@/components/data-table'
 import { supabase } from '@/lib/supabase'
+import { firstNote } from '@/lib/format'
 import { statuses, severityToBadgeVariant } from '../data/data'
 import { type Task } from '../data/schema'
 import { DataTableRowActions } from './data-table-row-actions'
@@ -78,9 +79,18 @@ export const tasksColumns: ColumnDef<Task>[] = [
       tdClassName: 'ps-4',
     },
     cell: ({ row }) => {
+      // The poller explains itself in details._notes (e.g. "total charges do
+      // not match freight+fuel+accessorial"). Showing the first note under the
+      // name means a flagged row says why it was flagged without a drill-down.
+      const note = firstNote(row.original.details?._notes)
       return (
-        <div className='flex space-x-2'>
+        <div className='flex flex-col gap-0.5'>
           <span className='truncate font-medium'>{row.getValue('title')}</span>
+          {note && (
+            <span className='truncate text-xs text-muted-foreground'>
+              {note}
+            </span>
+          )}
         </div>
       )
     },
