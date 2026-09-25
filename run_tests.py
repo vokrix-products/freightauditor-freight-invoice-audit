@@ -408,11 +408,12 @@ def test_rate_audit_leaves_rate_sheets_alone():
         "rate_basis": "per 100 lbs",
         "base_rate": 5.50,
     }
-    records = [_record(sheet)]
-    audited = apply_rate_audit(records, [RATE_LINE], lambda ship_date: 4.10)
+    # A rate sheet is skipped outright, so the audit adds nothing at all - not a
+    # status, not a note, not an empty _notes list.
+    audited = apply_rate_audit([_record(sheet)], [RATE_LINE], lambda ship_date: 4.10)
 
     assert audited[0]["status"] == "valid:good"
-    assert audited[0]["details"]["_notes"] == []
+    assert "_notes" not in audited[0]["details"]
     assert "overcharge_amount" not in audited[0]["details"]
 
 
