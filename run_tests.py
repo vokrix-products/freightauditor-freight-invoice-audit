@@ -326,6 +326,45 @@ def test_parse_rated_line_needs_class_weight_and_rate():
     assert parse_rated_line([{"description": "Corrugated Boxes, Retail Goods", "amount": 896.00}]) is None
 
 
+def test_parse_rated_line_reads_the_extractor_keys():
+    # llm_extractor.py now asks for the rated facts as their own keys, so the
+    # description does not have to be parsed at all. This is the shape record
+    # 20321 should carry once the prompt change is deployed; it produced no
+    # overcharge figure because the only line said "Corrugated Boxes, Retail
+    # Goods" and nothing else.
+    rated = parse_rated_line(
+        [
+            {
+                "description": "Corrugated Boxes, Retail Goods",
+                "amount": 896.00,
+                "freight_class": "100",
+                "weight": 14000,
+                "rate_per_100lbs": 6.40,
+            }
+        ]
+    )
+    assert rated["weight"] == 14000.0
+    assert rated["rate"] == 6.40
+    assert rated["amount"] == 896.00
+    assert rated["freight_class"] == "100"
+
+
+def test_parse_rated_line_falls_back_to_the_description():
+    # Records written before the prompt change carry the facts only in prose, and
+    # the structured keys must not shadow that path.
+    rated = parse_rated_line(
+        [
+            {
+                "description": "Corrugated Boxes (Class 100, 14,000 lbs @ $6.40/100lbs)",
+                "amount": 896.00,
+                "weight": 14000,
+            }
+        ]
+    )
+    assert rated["rate"] == 6.40
+    assert rated["weight"] == 14000.0
+
+
 def test_rate_audit_flags_line_haul_overcharge():
     invoice = _redwood_invoice(
         "Corrugated Boxes, Retail Goods (Class 100, 14,000 lbs @ $6.40/100lbs)", 896.00, 197.12
@@ -362,6 +401,21 @@ def test_rate_audit_guards_a_line_without_class_weight_and_rate():
     assert audited[0]["status"] == "contract-review:warning"
     assert "overcharge_amount" not in details
     assert any("no invoice line carried class, weight and rate" in note for note in details["_notes"])
+
+
+def test_rate_audit_reports_fuel_when_the_rated_line_is_unreadable():
+    # Regression: the fuel coverage check sat after the rated-line guard, so an
+    # invoice whose rated line could not be read returned early and never
+    # reported that the market diesel price is outside the contracted table.
+    # Record 20321 is exactly that case - no overcharge figure and no fuel note.
+    invoice = _redwood_invoice("Corrugated Boxes, Retail Goods", 896.00, 197.12)
+    audited = apply_rate_audit([_record(invoice)], [RATE_LINE], lambda ship_date: 6.285)
+    details = audited[0]["details"]
+
+    assert audited[0]["status"] == "contract-review:warning"
+    assert "overcharge_amount" not in details
+    assert any("no invoice line carried class, weight and rate" in note for note in details["_notes"])
+    assert any("outside the contracted table" in note for note in details["_notes"])
 
 
 def test_rate_audit_ignores_a_lane_with_no_contracted_rate():
@@ -447,9 +501,12 @@ if __name__ == "__main__":
     test_expected_linehaul_only_handles_derivable_bases()
     test_fuel_band_lookup()
     test_parse_rated_line_needs_class_weight_and_rate()
+    test_parse_rated_line_reads_the_extractor_keys()
+    test_parse_rated_line_falls_back_to_the_description()
     test_rate_audit_flags_line_haul_overcharge()
     test_rate_audit_never_writes_expected_freight_charge()
     test_rate_audit_guards_a_line_without_class_weight_and_rate()
+    test_rate_audit_reports_fuel_when_the_rated_line_is_unreadable()
     test_rate_audit_ignores_a_lane_with_no_contracted_rate()
     test_rate_audit_reports_fuel_outside_the_contracted_table()
     test_rate_audit_does_not_downgrade_a_flagged_record()
