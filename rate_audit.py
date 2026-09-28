@@ -6,7 +6,7 @@ contracted rate lines and a market diesel price - both of which only the poller
 can supply. Every function here is pure; the caller owns the database and the
 network calls.
 
-Three rules govern the code below. Each comes from a defect this product has
+Four rules govern the code below. Each comes from a defect this product has
 already shipped, not from taste.
 
 1. Never write expected_freight_charge. processor._assign_status compares
@@ -19,20 +19,26 @@ already shipped, not from taste.
    fields _assign_status compares.
 
 2. Never report a figure the inputs do not support. The audit needs one invoice
-   line carrying class, weight and rate. The extractor was only ever asked for a
-   line's description and amount, so those three facts reached the record only
-   when the model volunteered them in prose - which is why the same PDF produced
-   "Corrugated Boxes, Retail Goods (Class 100, 14,000 lbs @ $6.40/100lbs)" on one
-   upload and "Corrugated Boxes, Retail Goods" on the next. llm_extractor.py now
-   asks for freight_class, weight and rate_per_100lbs as their own keys, and
-   parse_rated_line reads those keys first. When neither the keys nor the
-   description carry them, the audit says so and produces no number, because a
-   wrong overcharge figure is worse than no figure in an audit product.
+   line carrying the facts the contract's own rate basis needs: class, weight and
+   rate per 100 lbs for a weight-based contract, or the mileage and the per-mile
+   rate for a per-mile contract. llm_extractor.py is asked for those as their own
+   keys, and parse_rated_line / parse_per_mile_line fall back to reading the
+   description, because records written before that prompt change carry the facts
+   only in prose - which is why the same PDF produced "Corrugated Boxes, Retail
+   Goods (Class 100, 14,000 lbs @ $6.40/100lbs)" on one upload and "Corrugated
+   Boxes, Retail Goods" on the next. When neither shape carries them, the audit
+   says so and produces no number, because a wrong overcharge figure is worse
+   than no figure in an audit product.
 
 3. An invoice with no matching contracted lane is left untouched. Every invoice
    on hand from a carrier with no rate sheet would otherwise be marked
    contract-review:warning, which would bury the invoices that do carry a
    finding.
+
+4. A directional contract rate prices one direction. Matching a lane backwards
+   and applying the forward rate to a backhaul would invent a rate the contract
+   does not promise, so a lane that matches only in reverse is reported as
+   contract-review and priced at nothing. Invoice 20340 is that case.
 """
 
 import re
@@ -50,6 +56,10 @@ MONEY_TOLERANCE = 0.01
 # address does not read as a ZIP.
 ZIP_PATTERN = re.compile(r"(?<!\d)(\d{5})(?!\d)")
 
+# A rate sheet that spells its lane by city, e.g. "NC (Hickory)" or
+# "WV (Charleston) 25301".
+ZONE_PAREN_PATTERN = re.compile(r"([A-Z]{2})\s*\(([^)]+)\)")
+
 # Contract fuel tables write the band with a hyphen, an en dash or an em dash
 # depending on the carrier's template.
 BAND_PATTERN = re.compile(r"\$?\s*(\d+(?:\.\d+)?)\s*[-\u2013\u2014]\s*\$?\s*(\d+(?:\.\d+)?)")
@@ -63,6 +73,17 @@ RATED_LINE_PATTERN = re.compile(
     r"class\s*(?P<freight_class>\d+(?:\.\d+)?)"
     r".*?(?P<weight>\d[\d,]*(?:\.\d+)?)\s*(?:lbs|lb|pounds)"
     r".*?\$?\s*(?P<rate>\d[\d,]*(?:\.\d+)?)\s*/\s*100",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# A per-mile line item, e.g.
+# "Line-haul Rate (Mileage: 843 miles @ $2.35/mile)". Bounded to 80 characters
+# between the mileage and the rate so two unrelated lines in one description
+# cannot be spliced into a single match.
+MILEAGE_LINE_PATTERN = re.compile(
+    r"(?P<miles>\d[\d,]*(?:\.\d+)?)\s*(?:mi|mile|miles)\b"
+    r".{0,80}?"
+    r"\$?\s*(?P<rate>\d[\d,]*(?:\.\d+)?)\s*(?:/|\bper\b)\s*(?:mi|mile|miles)\b",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -94,22 +115,96 @@ def extract_zip(value):
     return match.group(1) if match else None
 
 
-def match_rate_line(invoice_details, rate_lines):
-    """The contracted rate line covering this shipment's lane, or None."""
-    origin = extract_zip(invoice_details.get("origin_location"))
-    destination = extract_zip(invoice_details.get("destination_location"))
-    if not origin or not destination:
-        return None
+def extract_zone(value):
+    """The (state, city) in a location string, lower-cased city, or (None, None).
+
+    Needed because a contract may spell its lanes without any ZIP at all.
+    TransFreight writes "NC (Hickory)" -> "WV (Charleston)"; the invoice for the
+    same movement writes "1200 Industrial Parkway, Hickory, NC 28601". State and
+    city are what those two spellings share.
+    """
+    if value is None:
+        return None, None
+    text = str(value)
+
+    parenthesised = ZONE_PAREN_PATTERN.search(text)
+    if parenthesised:
+        return parenthesised.group(1).upper(), parenthesised.group(2).strip().lower()
+
+    parts = [part.strip() for part in text.split(",") if part.strip()]
+    if len(parts) >= 2:
+        tail = parts[-1].split()
+        if tail and len(tail[0]) == 2 and tail[0].isalpha():
+            return tail[0].upper(), parts[-2].lower()
+    return None, None
+
+
+def _lane_match(invoice_details, rate_lines):
+    """(rate_line, reversed) for this shipment's lane, or (None, False).
+
+    ZIP is tried first on both sides. A rate sheet that names no ZIP anywhere is
+    additionally eligible for a state-and-city match; a sheet that does name ZIPs
+    is matched on ZIPs alone, so exact matching is not loosened for the contracts
+    that can support it.
+    """
+    origin_zip = extract_zip(invoice_details.get("origin_location"))
+    destination_zip = extract_zip(invoice_details.get("destination_location"))
+    origin_zone = extract_zone(invoice_details.get("origin_location"))
+    destination_zone = extract_zone(invoice_details.get("destination_location"))
+
+    zipped_match = None
+    zoned_match = None
+    reversed_match = None
 
     for line in rate_lines or []:
         if not isinstance(line, dict):
             continue
-        if (
-            extract_zip(line.get("origin_zone_zip_postal")) == origin
-            and extract_zip(line.get("destination_zone_zip_postal")) == destination
-        ):
-            return line
-    return None
+
+        line_origin_raw = line.get("origin_zone_zip_postal")
+        line_destination_raw = line.get("destination_zone_zip_postal")
+
+        if zipped_match is None and origin_zip and destination_zip:
+            if (
+                extract_zip(line_origin_raw) == origin_zip
+                and extract_zip(line_destination_raw) == destination_zip
+            ):
+                zipped_match = line
+                continue
+
+        if None in origin_zone or None in destination_zone:
+            continue
+
+        line_origin_zone = extract_zone(line_origin_raw)
+        line_destination_zone = extract_zone(line_destination_raw)
+        if None in line_origin_zone or None in line_destination_zone:
+            continue
+
+        if extract_zip(line_origin_raw) or extract_zip(line_destination_raw):
+            continue
+
+        if line_origin_zone == origin_zone and line_destination_zone == destination_zone:
+            if zoned_match is None:
+                zoned_match = line
+        elif line_origin_zone == destination_zone and line_destination_zone == origin_zone:
+            if reversed_match is None:
+                reversed_match = line
+
+    if zipped_match is not None:
+        return zipped_match, False
+    if zoned_match is not None:
+        return zoned_match, False
+    return reversed_match, True
+
+
+def match_rate_line(invoice_details, rate_lines):
+    """The contracted rate line covering this shipment's lane, or None.
+
+    A lane the contract covers only in reverse is not returned: see rule 4.
+    """
+    line, reversed_lane = _lane_match(invoice_details, rate_lines)
+    if reversed_lane:
+        return None
+    return line
 
 
 def parse_rated_line(line_items):
@@ -130,10 +225,12 @@ def parse_rated_line(line_items):
             continue
 
         amount = _to_number(item.get("amount"))
+        if amount is None:
+            continue
 
         weight = _to_number(item.get("weight"))
         rate = _to_number(item.get("rate_per_100lbs"))
-        if weight is not None and rate is not None and amount is not None:
+        if weight is not None and rate is not None:
             freight_class = item.get("freight_class")
             return {
                 "freight_class": None if freight_class is None else str(freight_class),
@@ -148,7 +245,7 @@ def parse_rated_line(line_items):
             continue
         weight = _to_number(match.group("weight"))
         rate = _to_number(match.group("rate"))
-        if weight is None or rate is None or amount is None:
+        if weight is None or rate is None:
             continue
         return {
             "freight_class": match.group("freight_class"),
@@ -159,13 +256,46 @@ def parse_rated_line(line_items):
     return None
 
 
-def expected_linehaul(weight, base_rate, rate_basis):
-    """The contracted line-haul charge, or None when it is not derivable.
+def parse_per_mile_line(line_items):
+    """The one invoice line that carries mileage and a per-mile rate.
 
-    Only bases computable from invoice fields are supported. A per-mile contract
-    cannot be applied because no field on either document carries the mileage,
-    so it returns None and the caller reports contract-review rather than a
-    figure.
+    Same two shapes as parse_rated_line: the extractor's miles / rate_per_mile
+    keys first, then the description. Record 20340 carries
+    "Line-haul Rate (Mileage: 843 miles @ $2.35/mile)" as prose, which is the
+    shape MILEAGE_LINE_PATTERN reads.
+    """
+    for item in line_items or []:
+        if not isinstance(item, dict):
+            continue
+
+        amount = _to_number(item.get("amount"))
+        if amount is None:
+            continue
+
+        miles = _to_number(item.get("miles"))
+        rate = _to_number(item.get("rate_per_mile"))
+        if miles is not None and rate is not None:
+            return {"miles": miles, "rate": rate, "amount": amount}
+
+        description = str(item.get("description") or "")
+        match = MILEAGE_LINE_PATTERN.search(description)
+        if not match:
+            continue
+        miles = _to_number(match.group("miles"))
+        rate = _to_number(match.group("rate"))
+        if miles is None or rate is None:
+            continue
+        return {"miles": miles, "rate": rate, "amount": amount}
+    return None
+
+
+def expected_linehaul(weight, base_rate, rate_basis):
+    """The contracted line-haul charge for a weight-based basis, or None.
+
+    Only bases computable from the shipment's weight are supported here. A
+    per-mile contract is priced by the caller from the mileage on the invoice
+    line, because it does not use the weight at all - this function correctly
+    returns None for "per mile", and that is not a gap any more.
     """
     if weight is None or base_rate is None:
         return None
@@ -243,7 +373,7 @@ def audit_invoice(invoice_details, rate_lines, diesel_price=None):
     status = None
     detected = 0.0
 
-    rate_line = match_rate_line(invoice_details, rate_lines)
+    rate_line, reversed_lane = _lane_match(invoice_details, rate_lines)
     if rate_line is None:
         return {"status": None, "notes": notes, "updates": updates}
 
@@ -276,40 +406,78 @@ def audit_invoice(invoice_details, rate_lines, diesel_price=None):
                 )
             status = STATUS_CONTRACT_REVIEW
 
-    rated_line = parse_rated_line(invoice_details.get("invoice_line_items"))
-    if rated_line is None:
+    if reversed_lane:
         notes.append(
-            "cannot audit against the contracted rate: no invoice line carried "
-            "class, weight and rate"
+            "cannot audit against the contracted rate: the contract "
+            f"{reference or 'on file'} covers this lane only in the opposite direction, "
+            "and a directional rate does not price the reverse haul"
         )
         return {"status": STATUS_CONTRACT_REVIEW, "notes": notes, "updates": updates}
 
+    basis_text = str(rate_line.get("rate_basis") or "")
+    basis = basis_text.lower()
     base_rate = _to_number(rate_line.get("base_rate"))
-    expected = expected_linehaul(rated_line["weight"], base_rate, rate_line.get("rate_basis"))
-    if expected is None:
-        notes.append(
-            "cannot audit against the contracted rate: rate basis "
-            f"'{rate_line.get('rate_basis')}' is not derivable from the invoice fields on hand"
-        )
-        return {"status": STATUS_CONTRACT_REVIEW, "notes": notes, "updates": updates}
+    line_items = invoice_details.get("invoice_line_items")
 
-    difference = rated_line["amount"] - expected
-    if abs(difference) > MONEY_TOLERANCE:
-        detected += difference
-        notes.append(
-            f"line-haul overcharge of {difference:.2f}: invoiced "
-            f"{rated_line['amount']:.2f} at {rated_line['rate']:.2f}/100lbs against "
-            f"contracted {expected:.2f} at {base_rate:.2f}/100lbs for "
-            f"{origin} to {destination}"
-        )
+    if "mile" in basis:
+        audited_line = parse_per_mile_line(line_items)
+        if audited_line is None:
+            notes.append(
+                "cannot audit against the contracted rate: no invoice line carried the "
+                "mileage and the per-mile rate the contract prices from"
+            )
+            return {"status": STATUS_CONTRACT_REVIEW, "notes": notes, "updates": updates}
+        if base_rate is None:
+            notes.append(
+                "cannot audit against the contracted rate: the rate sheet states no base rate"
+            )
+            return {"status": STATUS_CONTRACT_REVIEW, "notes": notes, "updates": updates}
+        expected = audited_line["miles"] * base_rate
+        invoiced = audited_line["amount"]
+        difference = invoiced - expected
+        if abs(difference) > MONEY_TOLERANCE:
+            detected += difference
+            notes.append(
+                f"line-haul overcharge of {difference:.2f}: invoiced "
+                f"{invoiced:.2f} at {audited_line['rate']:.2f}/mile for "
+                f"{audited_line['miles']:.0f} miles against contracted "
+                f"{expected:.2f} at {base_rate:.2f}/mile"
+            )
+    else:
+        rated_line = parse_rated_line(line_items)
+        if rated_line is None:
+            notes.append(
+                "cannot audit against the contracted rate: no invoice line carried "
+                "class, weight and rate"
+            )
+            return {"status": STATUS_CONTRACT_REVIEW, "notes": notes, "updates": updates}
 
-    # The fuel variance, unlike the coverage check above, does need the rated
+        expected = expected_linehaul(rated_line["weight"], base_rate, basis_text)
+        if expected is None:
+            notes.append(
+                "cannot audit against the contracted rate: rate basis "
+                f"'{rate_line.get('rate_basis')}' is not derivable from the invoice fields on hand"
+            )
+            return {"status": STATUS_CONTRACT_REVIEW, "notes": notes, "updates": updates}
+
+        invoiced = rated_line["amount"]
+        difference = invoiced - expected
+        if abs(difference) > MONEY_TOLERANCE:
+            detected += difference
+            notes.append(
+                f"line-haul overcharge of {difference:.2f}: invoiced "
+                f"{rated_line['amount']:.2f} at {rated_line['rate']:.2f}/100lbs against "
+                f"contracted {expected:.2f} at {base_rate:.2f}/100lbs for "
+                f"{origin} to {destination}"
+            )
+
+    # The fuel variance, unlike the coverage check above, does need the audited
     # line: the contract expresses the surcharge as a percentage of the line-haul
     # charge, not of the transportation subtotal.
     if fuel_percent is not None:
         actual_fuel = _to_number(invoice_details.get("fuel_surcharge"))
         if actual_fuel is not None:
-            expected_fuel = fuel_percent * rated_line["amount"]
+            expected_fuel = fuel_percent * invoiced
             fuel_difference = actual_fuel - expected_fuel
             if abs(fuel_difference) > MONEY_TOLERANCE:
                 detected += fuel_difference
