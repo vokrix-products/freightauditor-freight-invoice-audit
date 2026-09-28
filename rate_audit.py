@@ -6,8 +6,8 @@ contracted rate lines and a market diesel price - both of which only the poller
 can supply. Every function here is pure; the caller owns the database and the
 network calls.
 
-Four rules govern the code below. Each comes from a defect this product has
-already shipped, not from taste.
+Five rules govern the code below. Each comes from a defect this product has
+already shipped, or from a limit on the inputs, not from taste.
 
 1. Never write expected_freight_charge. processor._assign_status compares
    expected_freight_charge against freight_charge, and freight_charge is the
@@ -39,6 +39,15 @@ already shipped, not from taste.
    and applying the forward rate to a backhaul would invent a rate the contract
    does not promise, so a lane that matches only in reverse is reported as
    contract-review and priced at nothing. Invoice 20340 is that case.
+
+5. A per-mile lane is priced from the mileage the invoice itself states, so the
+   audit checks the rate and not the distance. Record 20340 bills 843 miles at
+   $2.35/mile and rate sheet 20010 prices that same lane at $2.35/mile, so the
+   audit confirms 843 * 2.35 = 1981.05 and reports nothing. Had the carrier
+   billed 900 miles for the same movement the audit would take 900 as given and
+   still report nothing: no field on either document carries an independent
+   mileage, and no distance source is configured. Mileage is not auditable
+   without one, and that is a limit of the inputs rather than a choice.
 """
 
 import re
@@ -407,11 +416,24 @@ def audit_invoice(invoice_details, rate_lines, diesel_price=None):
             status = STATUS_CONTRACT_REVIEW
 
     if reversed_lane:
-        notes.append(
-            "cannot audit against the contracted rate: the contract "
-            f"{reference or 'on file'} covers this lane only in the opposite direction, "
-            "and a directional rate does not price the reverse haul"
-        )
+        reverse_origin = str(rate_line.get("origin_zone_zip_postal") or "").strip()
+        reverse_destination = str(rate_line.get("destination_zone_zip_postal") or "").strip()
+        reverse_rate = _to_number(rate_line.get("base_rate"))
+        reverse_basis = str(rate_line.get("rate_basis") or "").strip()
+        if reverse_origin and reverse_destination and reverse_rate is not None:
+            rate_text = f"at {reverse_rate:.2f} {reverse_basis}".strip()
+            notes.append(
+                f"cannot audit against the contracted rate: the contract "
+                f"{reference or 'on file'} prices {reverse_origin} -> {reverse_destination} "
+                f"{rate_text}; this invoice runs the opposite direction, and a directional "
+                "rate does not price the reverse haul"
+            )
+        else:
+            notes.append(
+                "cannot audit against the contracted rate: the contract "
+                f"{reference or 'on file'} covers this lane only in the opposite direction, "
+                "and a directional rate does not price the reverse haul"
+            )
         return {"status": STATUS_CONTRACT_REVIEW, "notes": notes, "updates": updates}
 
     basis_text = str(rate_line.get("rate_basis") or "")
