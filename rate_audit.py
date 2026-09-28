@@ -18,12 +18,16 @@ already shipped, not from taste.
    overcharge_amount plus a note instead; overcharge_amount is not one of the
    fields _assign_status compares.
 
-2. Never report a figure the inputs do not support. Extraction is an LLM call and
-   is not deterministic: the same PDF returned "Corrugated Boxes, Retail Goods
-   (Class 100, 14,000 lbs @ $6.40/100lbs)" on one upload and "Corrugated Boxes,
-   Retail Goods" on the next. When the rated line cannot be read the audit says
-   so and produces no number, because a wrong overcharge figure is worse than no
-   figure in an audit product.
+2. Never report a figure the inputs do not support. The audit needs one invoice
+   line carrying class, weight and rate. The extractor was only ever asked for a
+   line's description and amount, so those three facts reached the record only
+   when the model volunteered them in prose - which is why the same PDF produced
+   "Corrugated Boxes, Retail Goods (Class 100, 14,000 lbs @ $6.40/100lbs)" on one
+   upload and "Corrugated Boxes, Retail Goods" on the next. llm_extractor.py now
+   asks for freight_class, weight and rate_per_100lbs as their own keys, and
+   parse_rated_line reads those keys first. When neither the keys nor the
+   description carry them, the audit says so and produces no number, because a
+   wrong overcharge figure is worse than no figure in an audit product.
 
 3. An invoice with no matching contracted lane is left untouched. Every invoice
    on hand from a carrier with no rate sheet would otherwise be marked
@@ -51,8 +55,10 @@ ZIP_PATTERN = re.compile(r"(?<!\d)(\d{5})(?!\d)")
 BAND_PATTERN = re.compile(r"\$?\s*(\d+(?:\.\d+)?)\s*[-\u2013\u2014]\s*\$?\s*(\d+(?:\.\d+)?)")
 PERCENT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 
-# A rated line item as the extractor returns it, e.g.
+# A rated line item as older records carry it, e.g.
 # "Corrugated Boxes, Retail Goods (Class 100, 14,000 lbs @ $6.40/100lbs)".
+# Kept as a fallback: records written before llm_extractor.py asked for
+# freight_class / weight / rate_per_100lbs have the facts only in this prose.
 RATED_LINE_PATTERN = re.compile(
     r"class\s*(?P<freight_class>\d+(?:\.\d+)?)"
     r".*?(?P<weight>\d[\d,]*(?:\.\d+)?)\s*(?:lbs|lb|pounds)"
@@ -109,6 +115,11 @@ def match_rate_line(invoice_details, rate_lines):
 def parse_rated_line(line_items):
     """The one invoice line that carries class, weight and rate.
 
+    Two shapes are accepted. The extractor is asked for freight_class, weight and
+    rate_per_100lbs as their own keys, which is the reliable shape; records
+    written before that prompt change carry the same three facts inside the
+    description string, which RATED_LINE_PATTERN reads.
+
     Returns None when no line carries all three. That is the guard: without them
     the contracted charge for the shipment cannot be computed at all, and
     guessing from the transportation subtotal would count pallet and
@@ -117,13 +128,26 @@ def parse_rated_line(line_items):
     for item in line_items or []:
         if not isinstance(item, dict):
             continue
+
+        amount = _to_number(item.get("amount"))
+
+        weight = _to_number(item.get("weight"))
+        rate = _to_number(item.get("rate_per_100lbs"))
+        if weight is not None and rate is not None and amount is not None:
+            freight_class = item.get("freight_class")
+            return {
+                "freight_class": None if freight_class is None else str(freight_class),
+                "weight": weight,
+                "rate": rate,
+                "amount": amount,
+            }
+
         description = str(item.get("description") or "")
         match = RATED_LINE_PATTERN.search(description)
         if not match:
             continue
         weight = _to_number(match.group("weight"))
         rate = _to_number(match.group("rate"))
-        amount = _to_number(item.get("amount"))
         if weight is None or rate is None or amount is None:
             continue
         return {
@@ -217,6 +241,7 @@ def audit_invoice(invoice_details, rate_lines, diesel_price=None):
     notes = []
     updates = {}
     status = None
+    detected = 0.0
 
     rate_line = match_rate_line(invoice_details, rate_lines)
     if rate_line is None:
@@ -226,6 +251,30 @@ def audit_invoice(invoice_details, rate_lines, diesel_price=None):
         rate_line.get("contract_rate_sheet_identifier") or rate_line.get("title") or ""
     ).strip()
     updates["matched_rate_line_reference"] = reference or None
+
+    origin = extract_zip(invoice_details.get("origin_location"))
+    destination = extract_zip(invoice_details.get("destination_location"))
+
+    # Fuel coverage is checked before the rated line, and independently of it.
+    # Deciding whether the contract's fuel table covers the market price needs
+    # only the contract and the market price, so an invoice whose rated line
+    # cannot be read must still be told the table does not reach today's diesel.
+    # Record 20321 is the case that exposed this: no rated line, and no fuel note
+    # either, because the rated-line guard returned first.
+    table = rate_line.get("fuel_surcharge_table")
+    maximum_band = fuel_table_maximum(table)
+    fuel_percent = None
+    if maximum_band is not None:
+        fuel_percent = lookup_fuel_band(table, diesel_price)
+        if fuel_percent is None:
+            if diesel_price is None:
+                notes.append("fuel cannot be audited: market diesel price unavailable")
+            else:
+                notes.append(
+                    f"fuel cannot be audited: market diesel {diesel_price:.3f} is outside "
+                    f"the contracted table (highest band {maximum_band:.2f})"
+                )
+            status = STATUS_CONTRACT_REVIEW
 
     rated_line = parse_rated_line(invoice_details.get("invoice_line_items"))
     if rated_line is None:
@@ -244,11 +293,6 @@ def audit_invoice(invoice_details, rate_lines, diesel_price=None):
         )
         return {"status": STATUS_CONTRACT_REVIEW, "notes": notes, "updates": updates}
 
-    origin = extract_zip(invoice_details.get("origin_location"))
-    destination = extract_zip(invoice_details.get("destination_location"))
-
-    detected = 0.0
-
     difference = rated_line["amount"] - expected
     if abs(difference) > MONEY_TOLERANCE:
         detected += difference
@@ -259,31 +303,21 @@ def audit_invoice(invoice_details, rate_lines, diesel_price=None):
             f"{origin} to {destination}"
         )
 
-    table = rate_line.get("fuel_surcharge_table")
-    maximum_band = fuel_table_maximum(table)
-    if maximum_band is not None:
-        percent = lookup_fuel_band(table, diesel_price)
-        if percent is None:
-            if diesel_price is None:
-                notes.append("fuel cannot be audited: market diesel price unavailable")
-            else:
+    # The fuel variance, unlike the coverage check above, does need the rated
+    # line: the contract expresses the surcharge as a percentage of the line-haul
+    # charge, not of the transportation subtotal.
+    if fuel_percent is not None:
+        actual_fuel = _to_number(invoice_details.get("fuel_surcharge"))
+        if actual_fuel is not None:
+            expected_fuel = fuel_percent * rated_line["amount"]
+            fuel_difference = actual_fuel - expected_fuel
+            if abs(fuel_difference) > MONEY_TOLERANCE:
+                detected += fuel_difference
                 notes.append(
-                    f"fuel cannot be audited: market diesel {diesel_price:.3f} is outside "
-                    f"the contracted table (highest band {maximum_band:.2f})"
+                    f"fuel surcharge variance of {fuel_difference:.2f}: invoiced "
+                    f"{actual_fuel:.2f} against contracted {fuel_percent * 100:.2f}% of "
+                    f"line-haul = {expected_fuel:.2f}"
                 )
-            status = STATUS_CONTRACT_REVIEW
-        else:
-            actual_fuel = _to_number(invoice_details.get("fuel_surcharge"))
-            if actual_fuel is not None:
-                expected_fuel = percent * rated_line["amount"]
-                fuel_difference = actual_fuel - expected_fuel
-                if abs(fuel_difference) > MONEY_TOLERANCE:
-                    detected += fuel_difference
-                    notes.append(
-                        f"fuel surcharge variance of {fuel_difference:.2f}: invoiced "
-                        f"{actual_fuel:.2f} against contracted {percent * 100:.2f}% of "
-                        f"line-haul = {expected_fuel:.2f}"
-                    )
 
     if abs(detected) > MONEY_TOLERANCE:
         updates["overcharge_amount"] = round(detected, 2)
