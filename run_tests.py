@@ -8,9 +8,11 @@ from rate_audit import (
     apply_rate_audit,
     expected_linehaul,
     extract_zip,
+    extract_zone,
     fuel_table_maximum,
     lookup_fuel_band,
     match_rate_line,
+    parse_per_mile_line,
     parse_rated_line,
 )
 
@@ -317,11 +319,26 @@ def test_extract_zip_reads_both_spellings():
     assert extract_zip(None) is None
 
 
+def test_extract_zone_reads_both_spellings():
+    # A contract that names no ZIP anywhere still has to be matchable, which is
+    # what TransFreight writes: "NC (Hickory)" -> "WV (Charleston)".
+    assert extract_zone("NC (Hickory)") == ("NC", "hickory")
+    assert extract_zone("WV (Charleston) 25301") == ("WV", "charleston")
+    assert extract_zone("2200 Industrial Parkway, Reno, NV 89502") == ("NV", "reno")
+    assert extract_zone(
+        "Appalachian Steel Supply, 3200 Steel Mill Road, Charleston, WV 25301"
+    ) == ("WV", "charleston")
+    # A bare zone code is not a state and a city, and must not be read as one.
+    assert extract_zone("100") == (None, None)
+    assert extract_zone(None) == (None, None)
+
+
 def test_expected_linehaul_only_handles_derivable_bases():
     assert expected_linehaul(14000, 5.50, "per 100 lbs") == 770.0
     assert expected_linehaul(14000, 5.50, "per cwt") == 770.0
-    # A per-mile contract cannot be applied: no field on either document carries
-    # the mileage, so the audit must decline rather than guess.
+    # A per-mile contract is not priced from a weight, so this function still
+    # declines it. The audit prices it from the invoice line's own mileage
+    # instead - see test_rate_audit_prices_a_per_mile_lane.
     assert expected_linehaul(14000, 1.85, "per mile") is None
 
 
@@ -381,6 +398,129 @@ def test_parse_rated_line_falls_back_to_the_description():
     )
     assert rated["rate"] == 6.40
     assert rated["weight"] == 14000.0
+
+
+def test_parse_per_mile_line_reads_the_description():
+    # Record 20340 carries this line as prose, and rate sheet 20010 contracts the
+    # same lane at $2.35/mile.
+    line = parse_per_mile_line(
+        [
+            {
+                "description": "Line-haul Rate (Mileage: 843 miles @ $2.35/mile)",
+                "amount": 1981.05,
+            }
+        ]
+    )
+    assert line["miles"] == 843.0
+    assert line["rate"] == 2.35
+    assert line["amount"] == 1981.05
+    # A line with no mileage is not a per-mile line, and must not be priced as one.
+    assert parse_per_mile_line([{"description": "Toll & Accessorials", "amount": 124.50}]) is None
+
+
+def test_parse_per_mile_line_reads_the_extractor_keys():
+    line = parse_per_mile_line(
+        [
+            {
+                "description": "Line-haul Rate",
+                "amount": 1981.05,
+                "miles": 843,
+                "rate_per_mile": 2.35,
+            }
+        ]
+    )
+    assert line["miles"] == 843.0
+    assert line["rate"] == 2.35
+    assert line["amount"] == 1981.05
+
+
+# TransFreight Logistics rate sheet 20010, exactly as the record stores it: the
+# lane is written by city and carries no ZIP anywhere.
+PER_MILE_LINE = {
+    "title": "TransFreight Logistics LLC",
+    "contract_rate_sheet_identifier": "RC-TF-20010",
+    "origin_zone_zip_postal": "NC (Hickory)",
+    "destination_zone_zip_postal": "WV (Charleston)",
+    "rate_basis": "per mile",
+    "base_rate": 2.35,
+}
+
+HICKORY = "Blue Ridge Manufacturing Co., 1200 Industrial Parkway, Hickory, NC 28601"
+CHARLESTON = "Appalachian Steel Supply, 3200 Steel Mill Road, Charleston, WV 25301"
+
+
+def _per_mile_invoice(origin, destination, miles, rate_per_mile, amount):
+    return {
+        "document_type": "invoice",
+        "invoice_number": "INV-2024-87123",
+        "origin_location": origin,
+        "destination_location": destination,
+        "ship_date": "2024-06-11",
+        "freight_charge": amount,
+        "accessorial_charges": 289.50,
+        "total_charges": amount + 289.50,
+        "invoice_line_items": [
+            {
+                "description": f"Line-haul Rate (Mileage: {miles:,.0f} miles @ ${rate_per_mile}/mile)",
+                "amount": amount,
+            },
+            {"description": "Stop-off Charge (1 additional stop)", "amount": 75.00},
+        ],
+    }
+
+
+def test_rate_audit_prices_a_per_mile_lane_from_the_invoice_mileage():
+    # 843 miles at the contracted 2.35/mile is 1981.05, which is what the invoice
+    # charges, so the line-haul is correct and there is nothing to report. Before
+    # this change the audit could not price a per-mile lane at all.
+    invoice = _per_mile_invoice(HICKORY, CHARLESTON, 843, 2.35, 1981.05)
+    audited = apply_rate_audit([_record(invoice)], [PER_MILE_LINE], lambda ship_date: 6.285)
+    details = audited[0]["details"]
+
+    assert audited[0]["status"] == "valid:good"
+    assert "overcharge_amount" not in details
+    assert details["matched_rate_line_reference"] == "RC-TF-20010"
+    assert details["_notes"] == []
+
+
+def test_rate_audit_flags_a_per_mile_overcharge():
+    # Same mileage billed at 2.75/mile: 2318.25 against a contracted 1981.05.
+    invoice = _per_mile_invoice(HICKORY, CHARLESTON, 843, 2.75, 2318.25)
+    audited = apply_rate_audit([_record(invoice)], [PER_MILE_LINE], lambda ship_date: 6.285)
+    details = audited[0]["details"]
+
+    assert audited[0]["status"] == "flagged:critical"
+    assert details["overcharge_amount"] == 337.20
+    assert any("line-haul overcharge of 337.20" in note for note in details["_notes"])
+
+
+def test_rate_audit_reports_a_lane_covered_only_in_reverse():
+    # Invoice 20340 runs Charleston WV -> Hickory NC against a sheet written
+    # Hickory NC -> Charleston WV. Contract rate is directional, so the reverse
+    # haul is not priced - it is reported, with no figure.
+    invoice = _per_mile_invoice(CHARLESTON, HICKORY, 843, 2.35, 1981.05)
+    audited = apply_rate_audit([_record(invoice)], [PER_MILE_LINE], lambda ship_date: 6.285)
+    details = audited[0]["details"]
+
+    assert audited[0]["status"] == "contract-review:warning"
+    assert "overcharge_amount" not in details
+    assert details["matched_rate_line_reference"] == "RC-TF-20010"
+    assert any("opposite direction" in note for note in details["_notes"])
+
+
+def test_rate_audit_keeps_zip_matching_tight_for_a_sheet_that_names_zips():
+    # The zone fallback must not loosen a contract that can name ZIPs. The
+    # Redwood sheet covers Reno 89502; an invoice in the same city at 89509 is a
+    # different lane and gets no audit at all.
+    invoice = _redwood_invoice(
+        "Corrugated Boxes, Retail Goods (Class 100, 14,000 lbs @ $6.40/100lbs)", 896.00, 197.12
+    )
+    invoice["origin_location"] = "999 Other Road, Reno, NV 89509"
+    audited = apply_rate_audit([_record(invoice)], [RATE_LINE], lambda ship_date: 4.10)
+
+    assert audited[0]["status"] == "valid:good"
+    assert audited[0]["details"]["_notes"] == []
+    assert "overcharge_amount" not in audited[0]["details"]
 
 
 def test_rate_audit_flags_line_haul_overcharge():
@@ -517,11 +657,18 @@ if __name__ == "__main__":
     test_cross_upload_duplicate_leaves_new_invoices_alone()
     test_cross_upload_duplicate_keeps_existing_notes()
     test_extract_zip_reads_both_spellings()
+    test_extract_zone_reads_both_spellings()
     test_expected_linehaul_only_handles_derivable_bases()
     test_fuel_band_lookup()
     test_parse_rated_line_needs_class_weight_and_rate()
     test_parse_rated_line_reads_the_extractor_keys()
     test_parse_rated_line_falls_back_to_the_description()
+    test_parse_per_mile_line_reads_the_description()
+    test_parse_per_mile_line_reads_the_extractor_keys()
+    test_rate_audit_prices_a_per_mile_lane_from_the_invoice_mileage()
+    test_rate_audit_flags_a_per_mile_overcharge()
+    test_rate_audit_reports_a_lane_covered_only_in_reverse()
+    test_rate_audit_keeps_zip_matching_tight_for_a_sheet_that_names_zips()
     test_rate_audit_flags_line_haul_overcharge()
     test_rate_audit_never_writes_expected_freight_charge()
     test_rate_audit_guards_a_line_without_class_weight_and_rate()
