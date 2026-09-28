@@ -53,11 +53,60 @@ export function useJobs() {
 
 const TRIAL_LIMIT = 3
 
+// The trial gate used to key off `user.product_id`, a single scalar carried in
+// app_metadata. On a multi-product platform that scalar can only hold ONE
+// product, so a customer paying for this product *and* another was capped at
+// three uploads while the UI showed them as paid. `subscriptions` is keyed per
+// (customer_id, product_id) and is the authoritative record.
+async function hasActiveSubscription(userId: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('subscriptions')
+    .select('status')
+    .eq('customer_id', userId)
+    .eq('product_id', PRODUCT_ID)
+    .in('status', ['active', 'trialing'])
+    .limit(1)
+  if (error) return false
+  return (data ?? []).length > 0
+}
+
+type PaidCheckUser = {
+  id: string
+  product_id?: string
+  app_metadata?: { product_id?: string }
+}
+
+// Paid if EITHER signal says so: a live subscription row for this product, or
+// the legacy app_metadata.product_id marker. A union rather than a replacement,
+// so this change can never newly gate a customer who is already paying.
+async function isPaidForProduct(user: PaidCheckUser): Promise<boolean> {
+  if (user.product_id === PRODUCT_ID || user.app_metadata?.product_id === PRODUCT_ID) {
+    return true
+  }
+  return hasActiveSubscription(user.id)
+}
+
+export function useSubscription() {
+  const user = useAuthStore((state) => state.auth.user)
+  return useQuery({
+    queryKey: ['subscription', PRODUCT_ID, user?.id],
+    queryFn: async () => (user ? await hasActiveSubscription(user.id) : false),
+    enabled: !!user,
+    staleTime: 60_000,
+  })
+}
+
 export function useTrialUsage() {
   const user = useAuthStore((state) => state.auth.user)
-  const isPaid = !!(user as { app_metadata?: { product_id?: string } } | null)?.app_metadata?.product_id
+  const { data: subIsPaid, isSuccess } = useSubscription()
   const { data: jobs } = useJobs()
   const used = jobs?.filter(j => ['pending','processing','completed'].includes(j.status)).length ?? 0
+  const metaIsPaid =
+    (user as PaidCheckUser | null)?.product_id === PRODUCT_ID ||
+    (user as PaidCheckUser | null)?.app_metadata?.product_id === PRODUCT_ID
+  // While the subscription query is in flight fall back to the metadata marker,
+  // so a paid user is never briefly shown the upgrade prompt.
+  const isPaid = isSuccess ? !!subIsPaid || !!metaIsPaid : !!metaIsPaid
   return { used, limit: TRIAL_LIMIT, isPaid }
 }
 
@@ -88,7 +137,7 @@ export function useUploadJob() {
 
   async function uploadFile(file: File, jobType = 'process_upload') {
     if (!user) { setError('Not logged in'); return null }
-    if (user.product_id !== import.meta.env.VITE_PRODUCT_ID) {
+    if (!(await isPaidForProduct(user as PaidCheckUser))) {
       const count = await getRecordCount(user.id)
       if (count >= TRIAL_LIMIT) { setTrialLimitReached(true); return null }
     }
@@ -117,7 +166,7 @@ export function useUploadJob() {
   async function uploadFiles(files: File[], jobType = 'process_upload') {
     if (!user) { setError('Not logged in'); return null }
     if (files.length === 0) { setError('No files selected'); return null }
-    if (user.product_id !== import.meta.env.VITE_PRODUCT_ID) {
+    if (!(await isPaidForProduct(user as PaidCheckUser))) {
       const count = await getRecordCount(user.id)
       if (count >= TRIAL_LIMIT) { setTrialLimitReached(true); return null }
     }
