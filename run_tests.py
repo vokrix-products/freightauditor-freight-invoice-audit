@@ -92,6 +92,24 @@ def test_invoice_total_mismatch_still_flags():
     assert records[0]["status"] == "flagged:critical"
 
 
+def test_invoice_without_a_readable_total_is_not_reported_clean():
+    # Regression: the arithmetic block sits behind `if total is not None`, so an
+    # invoice whose total was never extracted skipped every check and fell
+    # through to valid:good. Record 20348 is exactly that - Cascadia
+    # INV-2025-00112 with freight 333.00, fuel 150.00 and accessorials 125.00 but
+    # no total - and the dashboard reported an invoice it had never verified as
+    # clean. total_charges is a required invoice field now, so the record comes
+    # back missing:critical instead.
+    data = _csv(
+        "invoice_number,carrier_name,ship_date,freight_charge,fuel_surcharge,accessorial_charges\n"
+        "INV-2025-00112,Cascadia Carriers LLC,2025-06-04,333.00,150.00,125.00\n"
+    )
+    records = process_file(data)
+    assert len(records) == 1
+    assert records[0]["status"] == "missing:critical"
+    assert any("total_charges" in note for note in records[0]["details"]["_notes"])
+
+
 def test_rate_sheet_valid():
     # Expiration kept in the future on purpose: this fixture was pinned to
     # 2026-01-01, so the moment that date passed the test asserted valid:good
@@ -488,6 +506,7 @@ if __name__ == "__main__":
     test_invoice_fuel_nested_inside_accessorials()
     test_invoice_separate_fuel_component_still_validates()
     test_invoice_total_mismatch_still_flags()
+    test_invoice_without_a_readable_total_is_not_reported_clean()
     test_rate_sheet_valid()
     test_rate_sheet_expired()
     test_unknown_text()

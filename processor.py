@@ -282,7 +282,21 @@ def _assign_status(record: Dict[str, Any], all_rows: List[Dict[str, Any]]):
     doc_type = record.get("_type") or "unknown"
 
     if doc_type == "invoice":
-        required = ["invoice_number", "carrier_name", "ship_date", "freight_charge"]
+        # total_charges is required, not optional. The whole arithmetic block
+        # below sits behind `if total is not None`, so an invoice whose total was
+        # never extracted skipped every check and fell through to valid:good -
+        # reported as verified when nothing had been verified. Record 20348
+        # (Cascadia INV-2025-00112) is that case: freight 333.00, fuel 150.00 and
+        # accessorials 125.00 present, no total, and the dashboard showed a clean
+        # invoice. An invoice that cannot be checked must not be reported as
+        # checked.
+        required = [
+            "invoice_number",
+            "carrier_name",
+            "ship_date",
+            "freight_charge",
+            "total_charges",
+        ]
         missing = [field for field in required if record.get(field) in (None, "")]
         if missing:
             return STATUS_MISSING, [f"missing required fields: {', '.join(missing)}"]
