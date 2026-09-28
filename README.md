@@ -46,15 +46,22 @@ The poller, not `process_file()`, supplies the customer's rate lines and a marke
 
 `expected_freight_charge` and `total_expected_charge` are deliberately **not** populated. `_assign_status` compares `expected_freight_charge` against `freight_charge`, which is the transportation subtotal and includes pallet and pallet-jack lines that no contract rate governs; populating it reported a 325.20 variance on a correct invoice. The finding is recorded in `overcharge_amount`, which is not one of the compared fields.
 
+`freight_charge` itself must be the invoice's stated **Transportation Charges subtotal**, not a single line's charge, because that is what `_assign_status` sums against the total. The extraction prompt names the subtotal explicitly for this reason: when it read the first line's `$896.00` instead of the subtotal `$1,095.20`, a correct invoice was reported as `total charges do not match freight+fuel+accessorial`.
+
 ## Known limits
-- **Extraction is an LLM call and is not deterministic.** The same PDF returned the rated-line text on one upload and omitted it on the next. When the rated line cannot be read the audit reports `contract-review:warning` and produces no figure, because a wrong overcharge figure is worse than none.
+- **Extraction is an LLM call.** The prompt names every field the audit needs — `freight_class`, `weight` and `rate_per_100lbs` on each rated line, and `freight_charge` as the subtotal. That is what makes the audit able to price a line at all: while the prompt asked only for `description` and `amount`, no line carried a weight the audit could use, so every invoice returned `contract-review:warning` with no figure. A line the extractor still returns without those keys is reported the same way rather than guessed at, because a wrong overcharge figure is worse than none.
 - **No mileage exists anywhere in the schema**, so a per-mile rate basis cannot be audited.
 - **The contracted fuel table may not cover the market.** When it does not, the audit says so rather than borrowing a percentage from a band that does not apply.
-- **Re-processing a job replaces the records written from that same file**, unless one of them carries `approved_at`, in which case both sets are kept.
+- **Re-processing a job replaces the records written from that same file**, unless one of them carries `approved_at`, in which case both sets are kept. Records from a *different* upload are flagged as duplicates, never replaced — the audit trail is the evidence.
 
 ## Usage
 - `python3 run_demo.py` — demo ok
 - `python3 run_tests.py` — all tests passed
+
+## Trial limit
+An unsubscribed account is capped at three uploads. The count is of `jobs` in `pending`/`processing`/`completed`, so archiving a job frees a slot and deleting records does not.
+
+The gate reads `subscriptions` for a row matching `(customer_id, product_id)` with status `active` or `trialing`. That table is keyed per product, so a customer subscribed to this product *and* another is recognised on both — whereas `app_metadata.product_id` is a single scalar and can only ever name one product, which is why the gate no longer relies on it alone. It is still honoured as an additional paid signal, so no existing payer becomes gated.
 
 ## Configuration
 - `DEEPSEEK_API_KEY` — optional; without it unstructured documents return `unmapped:warning`
