@@ -34,10 +34,16 @@ export interface DashboardStats {
   expiredCount: number
   // Money extracted from the invoices we processed. Rate sheets carry no
   // total, so they contribute nothing. This is what was reviewed, NOT what
-  // was recovered — no invoice-vs-rate-sheet comparison has run, so there is
-  // no overcharge figure to show.
+  // was recovered — it is the size of the pile, not the size of the finding.
   sumCharges: number
   recordsWithCharges: number
+  // What the contracted-rate audit found: the sum of positive overcharge_amount
+  // across invoices. This is money billed above the contracted rate, so it is a
+  // real finding rather than a volume measure. Rate sheets contribute nothing,
+  // and invoices the audit could not price contribute nothing either — an
+  // unpriced invoice is not a zero overcharge.
+  overchargeTotal: number
+  overchargeCount: number
 }
 
 // Derived automatically from statuses with severity='critical' in data.tsx.
@@ -141,6 +147,8 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
   let expiredCount = 0
   let sumCharges = 0
   let recordsWithCharges = 0
+  let overchargeTotal = 0
+  let overchargeCount = 0
 
   for (const row of rows) {
     const status = row.status ?? 'unknown'
@@ -161,6 +169,15 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
     if (charges !== null) {
       sumCharges += charges
       recordsWithCharges += 1
+    }
+
+    // Only positive figures. A negative overcharge_amount means the carrier
+    // billed below the contracted rate, which is not an overcharge and would
+    // otherwise net the headline finding down towards zero.
+    const overcharge = toNumber(row.details?.overcharge_amount)
+    if (overcharge !== null && overcharge > 0) {
+      overchargeTotal += overcharge
+      overchargeCount += 1
     }
   }
   const totalPrevWeek = rows.filter((r) => new Date(r.created_at) < weekAgo).length
@@ -206,6 +223,8 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
     expiredCount,
     sumCharges,
     recordsWithCharges,
+    overchargeTotal,
+    overchargeCount,
   }
 }
 

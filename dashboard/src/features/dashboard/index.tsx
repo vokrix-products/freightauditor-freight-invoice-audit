@@ -36,9 +36,10 @@ function Trend({ current, previous }: { current: number; previous: number }) {
   )
 }
 
-// PRODUCT_CUSTOMIZE: these four cards are written for a document-audit
-// product — volume, what needs a human, what has lapsed, and the money
-// reviewed. Retitle to match the domain if the product tracks something else.
+// PRODUCT_CUSTOMIZE: these five cards are written for a document-audit
+// product — volume, what needs a human, what the audit found in money, what
+// has lapsed, and the money reviewed. Retitle to match the domain if the
+// product tracks something else.
 export function Dashboard() {
   const { data, isLoading } = useDashboardStats()
   const [showUpgradeBanner, setShowUpgradeBanner] = useState(false)
@@ -58,6 +59,8 @@ export function Dashboard() {
 
   const chargesLabel = data ? formatCurrency(data.sumCharges) : null
   const chargedRecords = data?.recordsWithCharges ?? 0
+  const overchargeLabel = data ? formatCurrency(data.overchargeTotal) : null
+  const overchargeRecords = data?.overchargeCount ?? 0
 
   return (
     <>
@@ -88,7 +91,7 @@ export function Dashboard() {
         <div className='space-y-4'>
           <JobsCard />
           {PRODUCT_ARCHETYPE === 'report' && <ReportCard />}
-          <div className='grid gap-4 sm:grid-cols-2 lg:grid-cols-4'>
+          <div className='grid gap-4 sm:grid-cols-2 lg:grid-cols-5'>
             <Card>
               <CardHeader className='flex flex-row items-center justify-between space-y-0 pb-2'>
                 <CardTitle className='text-sm font-medium'>{RECORDS_LABEL}</CardTitle>
@@ -120,6 +123,27 @@ export function Dashboard() {
                     </div>
                     <p className='text-xs text-muted-foreground'>
                       Errors or overbilling detected
+                    </p>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className='flex flex-row items-center justify-between space-y-0 pb-2'>
+                <CardTitle className='text-sm font-medium'>Overcharges Found</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {isLoading ? (
+                  <Skeleton className='h-8 w-24' />
+                ) : (
+                  <>
+                    <div className='text-2xl font-bold tracking-tight text-destructive'>
+                      {overchargeLabel ?? '—'}
+                    </div>
+                    <p className='text-xs text-muted-foreground'>
+                      {overchargeRecords === 1
+                        ? 'billed above the contracted rate on 1 invoice'
+                        : `billed above the contracted rate on ${overchargeRecords} invoices`}
                     </p>
                   </>
                 )}
