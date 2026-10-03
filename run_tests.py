@@ -112,6 +112,49 @@ def test_invoice_without_a_readable_total_is_not_reported_clean():
     assert any("total_charges" in note for note in records[0]["details"]["_notes"])
 
 
+def test_invoice_total_net_of_its_own_discounts_is_valid():
+    # IronOak INV-2024-004219 states a Gross Total Charges of 2,464.25 and a NET
+    # AMOUNT DUE of 2,234.04. The difference is the invoice's own two discounts: a
+    # 10% contractual discount of 185.00 and a 2% early-payment discount of 45.21.
+    #
+    # The extracted components are correct - freight 1,935.00 is line-haul
+    # 1,850.00 plus the 85.00 tariff minimum, fuel 379.25, accessorials 150.00,
+    # summing to the printed gross - so the audit was comparing a gross against a
+    # net and reporting 230.21 of variance on a correct invoice. Before this the
+    # record came back flagged:critical.
+    data = _csv(
+        "invoice_number,carrier_name,ship_date,freight_charge,fuel_surcharge,"
+        "accessorial_charges,discount_amount,total_charges\n"
+        "INV-2024-004219,IronOak Transportation Inc.,2024-12-18,1935.00,379.25,150.00,230.21,2234.04\n"
+    )
+    records = process_file(data)
+    assert len(records) == 1
+    assert records[0]["status"] == "valid:good"
+    assert records[0]["details"]["_notes"] == []
+    assert records[0]["details"]["discount_amount"] == 230.21
+
+
+def test_invoice_with_discounts_that_still_do_not_reconcile_is_flagged():
+    # The discount candidate must not excuse a real discrepancy, and this invoice
+    # is the one on record where it cannot. TransFreight INV-2024-87123 prints its
+    # own Total Line-haul Charge as 4,330.91 - the sum of all six of its lines -
+    # and a 12% discount of 520.20 takes that to 3,810.71. It then states
+    # 4,100.21, which is the gross plus the 289.50 accessorial subtotal that the
+    # gross already contains.
+    #
+    # So none of the three candidates match: 4,255.91, 3,770.55 and 3,735.71 all
+    # miss 4,100.21. Accepting a discount must not be a way to explain away any
+    # gap - only one the invoice's own arithmetic supports.
+    data = _csv(
+        "invoice_number,carrier_name,ship_date,freight_charge,fuel_surcharge,"
+        "accessorial_charges,discount_amount,total_charges\n"
+        "INV-2024-87123,TransFreight Logistics LLC,2024-06-11,3481.05,485.36,289.50,520.20,4100.21\n"
+    )
+    records = process_file(data)
+    assert len(records) == 1
+    assert records[0]["status"] == "flagged:critical"
+
+
 def test_rate_sheet_valid():
     # Expiration kept in the future on purpose: this fixture was pinned to
     # 2026-01-01, so the moment that date passed the test asserted valid:good
@@ -647,6 +690,8 @@ if __name__ == "__main__":
     test_invoice_separate_fuel_component_still_validates()
     test_invoice_total_mismatch_still_flags()
     test_invoice_without_a_readable_total_is_not_reported_clean()
+    test_invoice_total_net_of_its_own_discounts_is_valid()
+    test_invoice_with_discounts_that_still_do_not_reconcile_is_flagged()
     test_rate_sheet_valid()
     test_rate_sheet_expired()
     test_unknown_text()
