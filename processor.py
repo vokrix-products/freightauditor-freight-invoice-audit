@@ -25,6 +25,7 @@ NUMERIC_FIELDS = {
     "fuel_surcharge",
     "accessorial_charges",
     "total_charges",
+    "discount_amount",
     "minimum_charge",
     "base_rate",
     "expected_freight_charge",
@@ -49,7 +50,8 @@ KEY_ALIASES_RAW = {
     "accessorial_codes": ["accessorial code", "accessorial codes", "accessorial_code"],
     "accessorial_descriptions": ["accessorial description", "accessorial descriptions", "accessorial_desc"],
     "accessorial_charges": ["accessorial charge", "accessorial charges", "accessorial_charge"],
-    "total_charges": ["total charges", "total charge", "total", "invoice total", "total_charges", "price", "amount", "total_amount", "total amount", "grand total", "invoice amount"],
+    "total_charges": ["total charges", "total charge", "total", "invoice total", "total_charges", "price", "amount", "total_amount", "total amount", "grand total", "invoice amount", "net amount due", "total amount due"],
+    "discount_amount": ["discount amount", "discount", "discounts", "total discount", "discount_amount", "discounts and allowances", "contractual discount", "early payment discount"],
     "payment_due_date": ["payment due date", "due date", "payment_due_date", "due_date", "invoice due date"],
     "currency": ["currency", "curr"],
     "invoice_line_items": ["invoice line item details", "line item details", "line_items", "invoice line-item details", "invoice_line_items"],
@@ -314,14 +316,29 @@ def _assign_status(record: Dict[str, Any], all_rows: List[Dict[str, Any]]):
         freight = record.get("freight_charge")
         fuel = record.get("fuel_surcharge")
         accessorial = record.get("accessorial_charges")
+        discount = record.get("discount_amount")
         if total is not None:
-            # Carriers lay the total out two different ways. Sometimes the fuel
-            # surcharge is its own line beside the accessorial subtotal, so all
-            # three components add up to the total. Sometimes fuel is the first
-            # line INSIDE the accessorial subtotal, so adding it a second time
-            # counts it twice and reports a correct invoice as overbilling -
-            # the worst false positive an audit product can produce. Accept
-            # either decomposition; a real mismatch still fails both.
+            # Carriers lay the total out more than one way, and the check has to
+            # accept every layout a correct invoice actually uses - a false
+            # positive on a correct invoice is the worst thing a freight audit
+            # can report.
+            #
+            # Either the fuel surcharge is its own line beside the accessorial
+            # subtotal, so all three components add up to the total; or fuel is
+            # the first line INSIDE the accessorial subtotal, so adding it a
+            # second time counts it twice and flags a correct invoice. That is
+            # INV-2024-89341, hence the second candidate.
+            #
+            # Or the invoice states a gross and then deducts its own discounts to
+            # reach the amount due, so the total the audit reads is a NET and the
+            # components sum to a gross. That is IronOak INV-2024-004219: gross
+            # 2,464.25 less a 185.00 contractual and a 45.21 early-payment
+            # discount gives the 2,234.04 the invoice states, and comparing the
+            # gross against the net reported 230.21 of variance on an invoice
+            # that is correct. Hence the third candidate.
+            #
+            # The discount candidate needs all four figures, so an invoice that
+            # states no discount is checked exactly as it was before.
             separated = [
                 value for value in (freight, fuel, accessorial) if value is not None
             ]
@@ -330,10 +347,15 @@ def _assign_status(record: Dict[str, Any], all_rows: List[Dict[str, Any]]):
                 candidates.append(sum(separated))
             if freight is not None and accessorial is not None and fuel is not None:
                 candidates.append(float(freight) + float(accessorial))
+            if discount is not None and len(separated) == 3:
+                candidates.append(sum(separated) - float(discount))
             if candidates and all(
                 abs(float(total) - candidate) > FLOAT_TOLERANCE for candidate in candidates
             ):
-                return STATUS_FLAGGED, ["total charges do not match freight+fuel+accessorial"]
+                return STATUS_FLAGGED, [
+                    "total charges do not match freight+fuel+accessorial, "
+                    "or the same less any discount"
+                ]
 
         variance_pairs = [
             ("expected_freight_charge", "freight_charge"),
