@@ -419,6 +419,63 @@ def _assign_status(record: Dict[str, Any], all_rows: List[Dict[str, Any]]):
     return STATUS_UNMAPPED, ["unable to identify document type"]
 
 
+def _carrier_key(value):
+    """Carrier name normalized for comparison, or None when it is not known.
+
+    "Unknown Vendor" is the title process_file falls back to when no carrier was
+    extracted, so it has to read as "not known" rather than as a carrier name -
+    otherwise two unrelated invoices with unreadable carriers would look like the
+    same carrier and their shared invoice number like a duplicate.
+
+    Matching is exact on the normalized tokens, so two spellings of one carrier
+    ("TransFreight Logistics" and "TransFreight Logistics LLC") count as different
+    carriers and their shared number is not flagged.
+    """
+    if value is None:
+        return None
+    token = re.sub(r"[^a-z0-9]+", "", str(value).lower())
+    if not token or token in {"unknown", "unknownvendor", "none", "null"}:
+        return None
+    return token
+
+
+def _split_history(existing_invoice_numbers):
+    """Sort the caller's history into numbers, carrier pairs and carrierless numbers.
+
+    Accepts both shapes the caller may pass: bare invoice-number strings, which is
+    what the poller sent before carriers travelled with the history, and
+    (carrier, number) pairs. A bare string means that row's carrier is unknown, so
+    it is matched on the number alone.
+    """
+    numbers = set()
+    pairs = set()
+    carrierless = set()
+
+    for entry in existing_invoice_numbers or []:
+        if entry is None:
+            continue
+
+        if isinstance(entry, (tuple, list)):
+            if len(entry) != 2:
+                continue
+            carrier, number = entry
+        else:
+            carrier, number = None, entry
+
+        number = str(number).strip() if number is not None else ""
+        if not number:
+            continue
+
+        numbers.add(number)
+        key = _carrier_key(carrier)
+        if key is None:
+            carrierless.add(number)
+        else:
+            pairs.add((key, number))
+
+    return numbers, pairs, carrierless
+
+
 DUPLICATE_UPLOAD_NOTE = "duplicate invoice number from a previous upload"
 
 
@@ -438,14 +495,20 @@ def apply_cross_upload_duplicates(
     scope and the database access, this owns the decision. A duplicate overrides
     valid/expired but never discards the existing notes, so a missing-field
     reason stays visible alongside the duplicate reason.
+
+    Matching is scoped by carrier as well as by number. Invoice numbers are issued
+    per carrier, so a number alone does not identify an invoice: records 20349 and
+    20384 both read INV-2024-87123, but 20349 is SwiftLine Logistics billing 254.11
+    and 20384 is TransFreight Logistics LLC billing 4,100.21, and flagging one as a
+    duplicate of the other is a false positive. The carrier is read from the record
+    title, which is where process_file puts carrier_name.
+
+    When either side's carrier is unknown - a history row written before this, or
+    an invoice whose carrier could not be read - the number alone decides, so a
+    true duplicate is still caught.
     """
-    existing = {
-        str(value).strip()
-        for value in (existing_invoice_numbers or [])
-        if value is not None
-    }
-    existing.discard("")
-    if not existing:
+    numbers, carrier_pairs, carrierless = _split_history(existing_invoice_numbers)
+    if not numbers:
         return result_records
 
     updated_records: List[Dict[str, Any]] = []
@@ -464,7 +527,18 @@ def apply_cross_upload_duplicates(
             updated_records.append(item)
             continue
 
-        if str(invoice_number).strip() not in existing:
+        number = str(invoice_number).strip()
+        if number not in numbers:
+            updated_records.append(item)
+            continue
+
+        carrier = _carrier_key(details.get("carrier_name")) or _carrier_key(item.get("title"))
+        matched = (
+            number in carrierless
+            or carrier is None
+            or (carrier, number) in carrier_pairs
+        )
+        if not matched:
             updated_records.append(item)
             continue
 
