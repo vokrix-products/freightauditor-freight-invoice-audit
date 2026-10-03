@@ -22,6 +22,7 @@ INVOICE_FIELDS = [
     "freight_charge",
     "fuel_surcharge",
     "accessorial_charges",
+    "discount_amount",
     "total_charges",
     "invoice_line_items",
     "currency",
@@ -58,7 +59,15 @@ SYSTEM_PROMPT = (
     "  item's charge - an invoice whose commodity line reads 896.00 and whose\n"
     "  Transportation Charges read 1,095.20 has freight_charge 1095.20. Number\n"
     "  only, no currency symbol or commas.\n"
-    "- total_charges is the invoice grand total as a number.\n"
+    "- total_charges is the invoice's final amount due: the figure the invoice\n"
+    "  states as its NET AMOUNT DUE, TOTAL AMOUNT DUE or grand total, AFTER any\n"
+    "  discount has been deducted. Number only.\n"
+    "- discount_amount is the total of every discount and allowance the invoice\n"
+    "  deducts on its way from gross charges to that amount due - contractual and\n"
+    "  early-payment discounts alike - as a POSITIVE number. An invoice showing a\n"
+    "  10% contractual discount of 185.00 and a 2% early-payment discount of 45.21\n"
+    "  has discount_amount 230.21, not -230.21 and not 185.00. Omit the key when\n"
+    "  the invoice deducts nothing.\n"
     "- invoice_line_items is an array of objects with description and amount. When a\n"
     "  line states a freight class, a weight and a rate per 100 lbs, put those on the\n"
     "  same object under freight_class, weight and rate_per_100lbs - numbers only, no\n"
