@@ -185,27 +185,33 @@ def _paged_records(customer_id, select):
 
 
 def fetch_existing_invoice_numbers(customer_id, exclude_source_file_path=None):
-    """Invoice numbers this customer has already had processed.
+    """Invoice numbers this customer has already had processed, with the carrier.
 
     Cross-upload duplicate detection needs history the processor cannot see: it
     only ever receives one file. Scoped to a single customer, because the same
-    invoice number appearing under two different accounts is not a duplicate.
+    invoice number appearing under two different accounts is not a duplicate. The
+    carrier travels with the number because invoice numbers are issued per carrier,
+    and a number alone does not identify an invoice.
 
     Records written from the file currently being processed are skipped, so
     re-running a job does not flag its own previous output as a duplicate of
     itself.
     """
-    numbers = set()
+    seen = set()
 
-    for row in _paged_records(customer_id, "details,source_file_path"):
+    for row in _paged_records(customer_id, "details,source_file_path,title"):
         if exclude_source_file_path and row.get("source_file_path") == exclude_source_file_path:
             continue
         details = row.get("details") or {}
         invoice_number = details.get("invoice_number")
-        if invoice_number is not None and str(invoice_number).strip():
-            numbers.add(str(invoice_number).strip())
+        if invoice_number is None or not str(invoice_number).strip():
+            continue
+        # The carrier is the record title: process_file promotes carrier_name to
+        # it and deliberately keeps it out of details. A null title reads as "not
+        # known", which leaves the processor to match on the number alone.
+        seen.add((row.get("title"), str(invoice_number).strip()))
 
-    return numbers
+    return seen
 
 
 def fetch_rate_lines(customer_id):

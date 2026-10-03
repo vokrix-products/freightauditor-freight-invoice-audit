@@ -1,4 +1,5 @@
 from processor import (
+    DUPLICATE_UPLOAD_NOTE,
     _expand_rate_lanes,
     _normalize_row,
     apply_cross_upload_duplicates,
@@ -682,6 +683,52 @@ def test_rate_audit_matches_on_lane_ignoring_carrier_name():
     assert match_rate_line(invoice, [line_without_carrier]) is not None
 
 
+def test_cross_upload_duplicate_is_scoped_by_carrier():
+    # Invoice numbers are issued per carrier, so the same number from a different
+    # carrier is a different invoice. Records 20349 and 20384 both read
+    # INV-2024-87123: SwiftLine Logistics bills 254.11, TransFreight Logistics LLC
+    # bills 4,100.21. Flagging the first as a duplicate of the second is a false
+    # positive and is what this scoping removes.
+    data = _csv(
+        "invoice_number,carrier_name,ship_date,freight_charge,total_charges\n"
+        "INV-2024-87123,SwiftLine Logistics,2024-06-11,254.11,254.11\n"
+    )
+    records = process_file(data)
+    history = {("TransFreight Logistics LLC", "INV-2024-87123")}
+    unflagged = apply_cross_upload_duplicates(records, history)
+
+    assert unflagged[0]["status"] == "valid:good"
+    assert unflagged[0]["details"]["_notes"] == []
+
+
+def test_cross_upload_duplicate_still_flags_the_same_carrier():
+    # The scoping must not stop a genuine re-upload from being caught.
+    data = _csv(
+        "invoice_number,carrier_name,ship_date,freight_charge,total_charges\n"
+        "INV-2026-11487,Redwood Freight Systems,2026-09-15,100.00,100.00\n"
+    )
+    records = process_file(data)
+    history = {("Redwood Freight Systems", "INV-2026-11487")}
+    flagged = apply_cross_upload_duplicates(records, history)
+
+    assert flagged[0]["status"] == "flagged:critical"
+    assert DUPLICATE_UPLOAD_NOTE in flagged[0]["details"]["_notes"]
+
+
+def test_cross_upload_duplicate_falls_back_to_number_when_a_carrier_is_missing():
+    # History written before carriers travelled with it carries no carrier, and an
+    # invoice whose carrier could not be read has none either. Either side being
+    # unknown means the number alone decides, so a true duplicate is not lost.
+    data = _csv(
+        "invoice_number,carrier_name,ship_date,freight_charge,total_charges\n"
+        "INV-2026-11487,Redwood Freight Systems,2026-09-15,100.00,100.00\n"
+    )
+    records = process_file(data)
+
+    assert apply_cross_upload_duplicates(records, {"INV-2026-11487"})[0]["status"] == "flagged:critical"
+    assert apply_cross_upload_duplicates(records, {(None, "INV-2026-11487")})[0]["status"] == "flagged:critical"
+
+
 if __name__ == "__main__":
     test_invoice_valid()
     test_invoice_missing()
@@ -701,6 +748,9 @@ if __name__ == "__main__":
     test_cross_upload_duplicate_is_flagged()
     test_cross_upload_duplicate_leaves_new_invoices_alone()
     test_cross_upload_duplicate_keeps_existing_notes()
+    test_cross_upload_duplicate_is_scoped_by_carrier()
+    test_cross_upload_duplicate_still_flags_the_same_carrier()
+    test_cross_upload_duplicate_falls_back_to_number_when_a_carrier_is_missing()
     test_extract_zip_reads_both_spellings()
     test_extract_zone_reads_both_spellings()
     test_expected_linehaul_only_handles_derivable_bases()
