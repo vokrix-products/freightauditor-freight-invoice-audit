@@ -27,6 +27,11 @@ export interface RateAgreement {
 
 export interface DashboardStats {
   total: number
+  // Rows classified as invoices. `total` counts rate agreements as well, so a
+  // card titled after invoices must not read from it: one customer had 17
+  // records, of which 8 were rate-agreement lanes rather than audits.
+  invoiceCount: number
+  invoiceCountPrevWeek: number
   needsAttention: number
   addedThisWeek: number
   addedPrevWeek: number
@@ -156,7 +161,8 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
   let addedThisWeek = 0
   let addedPrevWeek = 0
   let needsAttentionPrevWeek = 0
-  let expiredCount = 0
+  let invoiceCount = 0
+  let invoiceCountPrevWeek = 0
   let sumCharges = 0
   let recordsWithCharges = 0
   let overchargeTotal = 0
@@ -169,7 +175,13 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
     const isAttention = ATTENTION_STATUSES.includes(status.toLowerCase())
 
     if (isAttention) needsAttention += 1
-    if (status.toLowerCase() === EXPIRED_STATUS) expiredCount += 1
+    const isInvoice =
+      (row.details?.document_type as string | undefined) === 'invoice'
+    if (isInvoice) {
+      invoiceCount += 1
+      // Same cut-off as totalPrevWeek below, so the trend compares like with like.
+      if (createdAt < weekAgo) invoiceCountPrevWeek += 1
+    }
     if (createdAt >= weekAgo) {
       addedThisWeek += 1
     } else if (createdAt >= twoWeeksAgo) {
@@ -225,6 +237,13 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
     a.title.localeCompare(b.title)
   )
 
+  // Counted per agreement, not per row. A rate sheet expands to one record per
+  // lane, so counting rows reported a single lapsed agreement covering six lanes
+  // as six expired agreements.
+  const expiredCount = rateAgreements.filter(
+    (agreement) => agreement.status.toLowerCase() === EXPIRED_STATUS
+  ).length
+
   const upcomingExpirations = summariseRateSheets(
     rateSheets,
     (expiry) => expiry >= now && expiry <= in90Days,
@@ -240,6 +259,8 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
 
   return {
     total: rows.length,
+    invoiceCount,
+    invoiceCountPrevWeek,
     needsAttention,
     addedThisWeek,
     addedPrevWeek,
