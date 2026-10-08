@@ -103,9 +103,12 @@ export function Dashboard() {
                 ) : (
                   <>
                     <div className='text-2xl font-bold tracking-tight'>
-                      <NumberTicker value={data?.total ?? 0} />
+                      <NumberTicker value={data?.invoiceCount ?? 0} />
                     </div>
-                    <Trend current={data?.total ?? 0} previous={data?.totalPrevWeek ?? 0} />
+                    <Trend
+                      current={data?.invoiceCount ?? 0}
+                      previous={data?.invoiceCountPrevWeek ?? 0}
+                    />
                   </>
                 )}
               </CardContent>
