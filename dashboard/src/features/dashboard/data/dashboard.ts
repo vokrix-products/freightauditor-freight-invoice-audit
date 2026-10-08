@@ -17,6 +17,14 @@ export interface UpcomingRecord {
   due_date: string
 }
 
+// One rate agreement, collapsed from the row-per-lane shape the poller writes.
+export interface RateAgreement {
+  title: string
+  laneCount: number
+  status: string
+  expiry: string | null
+}
+
 export interface DashboardStats {
   total: number
   needsAttention: number
@@ -28,6 +36,10 @@ export interface DashboardStats {
   recent: DashboardRecord[]
   upcomingExpirations: UpcomingRecord[]
   recentlyExpiredRateSheets: UpcomingRecord[]
+  // Every rate agreement on file, not only the ones near expiry. The expirations
+  // card answers "what lapses soon"; this answers "what have I uploaded", which
+  // is the question a customer asks before uploading their first invoice.
+  rateAgreements: RateAgreement[]
   // Rate schedules whose contracted rates have already lapsed. Kept separate
   // from needsAttention because an expired rate sheet is a different problem
   // from a flagged invoice, and it drives its own card.
@@ -188,6 +200,31 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
     (r) => (r.details?.document_type as string | undefined) === 'rate_sheet'
   )
 
+  // A rate sheet expands to one record per lane, so a 6-lane agreement is 6
+  // rows. Grouping on title plus expiry collapses them to one entry and counts
+  // the lanes. Expiry is part of the key because one carrier can hold two
+  // sheets at different dates.
+  const agreementMap = new Map<string, RateAgreement>()
+  for (const row of rateSheets) {
+    const title = row.title ?? 'Untitled rate agreement'
+    const expiry = expiryOf(row)
+    const key = `${title}|${expiry ?? ''}`
+    const found = agreementMap.get(key)
+    if (found) {
+      found.laneCount += 1
+      continue
+    }
+    agreementMap.set(key, {
+      title,
+      expiry,
+      laneCount: 1,
+      status: row.status ?? 'unknown',
+    })
+  }
+  const rateAgreements = Array.from(agreementMap.values()).sort((a, b) =>
+    a.title.localeCompare(b.title)
+  )
+
   const upcomingExpirations = summariseRateSheets(
     rateSheets,
     (expiry) => expiry >= now && expiry <= in90Days,
@@ -220,6 +257,7 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
     })),
     upcomingExpirations,
     recentlyExpiredRateSheets,
+    rateAgreements,
     expiredCount,
     sumCharges,
     recordsWithCharges,

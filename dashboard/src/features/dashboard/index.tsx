@@ -18,6 +18,7 @@ import { formatCurrency } from '@/lib/format'
 import { ReportCard } from './components/report-card'
 import { Overview } from './components/overview'
 import { RecentActivity } from './components/recent-activity'
+import { RateAgreements } from './components/rate-agreements'
 import { UpcomingExpirations } from './components/upcoming-expirations'
 import { useDashboardStats } from './data/dashboard'
 import { supabase } from '@/lib/supabase'
@@ -222,6 +223,19 @@ export function Dashboard() {
             </CardHeader>
             <CardContent>
               <UpcomingExpirations />
+            </CardContent>
+          </Card>
+          {/* What is on file, as opposed to what lapses soon. One entry per
+              agreement rather than one per lane, so a 6-lane sheet shows once. */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Rate Agreements on File</CardTitle>
+              <CardDescription>
+                Carrier rate agreements uploaded so far, and the lanes each covers
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <RateAgreements />
             </CardContent>
           </Card>
         </div>

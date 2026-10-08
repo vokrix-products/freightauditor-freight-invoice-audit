@@ -10,6 +10,7 @@ const taskSearchSchema = z.object({
     .array(z.enum(statuses.map((status) => status.value)))
     .optional()
     .catch([]),
+  document_type: z.array(z.string()).optional().catch([]),
   filter: z.string().optional().catch(''),
 })
 
