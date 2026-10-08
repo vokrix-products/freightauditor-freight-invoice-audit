@@ -37,6 +37,9 @@ export interface DashboardStats {
   addedPrevWeek: number
   totalPrevWeek: number
   needsAttentionPrevWeek: number
+  // Rate sheets are counted once per agreement rather than once per lane; every
+  // other row counts as itself. Counting lanes made the Expired bar read 6 while
+  // the Rate Agreements Expired card beside it read 1.
   statusCounts: { status: string; count: number }[]
   recent: DashboardRecord[]
   upcomingExpirations: UpcomingRecord[]
@@ -49,13 +52,20 @@ export interface DashboardStats {
   // from needsAttention because an expired rate sheet is a different problem
   // from a flagged invoice, and it drives its own card.
   expiredCount: number
-  // Money extracted from the invoices we processed. Rate sheets carry no
-  // total, so they contribute nothing. This is what was reviewed, NOT what
-  // was recovered — it is the size of the pile, not the size of the finding.
+  // Money extracted from the invoices we processed, summed per distinct
+  // invoice rather than per row. Re-uploading one invoice under a different
+  // filename writes another record, and summing rows counted one customer's
+  // 5,312.31 invoice twice and their 1,606.32 invoice three times — 23,245.47
+  // reported against 14,720.52 of actual invoices. Rate sheets carry no total,
+  // so they contribute nothing. This is what was reviewed, NOT what was
+  // recovered — it is the size of the pile, not the size of the finding.
   sumCharges: number
+  // Distinct invoices carrying a readable total — one per invoice, not one per
+  // upload. The field name predates that change.
   recordsWithCharges: number
   // What the contracted-rate audit found: the sum of positive overcharge_amount
-  // across invoices. This is money billed above the contracted rate, so it is a
+  // across distinct invoices, so re-uploading an already-counted invoice does not
+  // double the finding. This is money billed above the contracted rate, so it is a
   // real finding rather than a volume measure. Rate sheets contribute nothing,
   // and invoices the audit could not price contribute nothing either — an
   // unpriced invoice is not a zero overcharge.
@@ -141,6 +151,15 @@ function summariseRateSheets(
   return out
 }
 
+// An invoice is identified by its number scoped to the carrier that issued it —
+// the same key the poller's duplicate detection uses. A row whose number could
+// not be read gets its own key, so unreadable invoices are never merged together.
+function invoiceKey(row: RecordRow): string {
+  const number = String(row.details?.invoice_number ?? '').trim()
+  if (!number) return `row:${row.id}`
+  return `${row.title ?? ''}|${number}`
+}
+
 async function fetchDashboardStats(): Promise<DashboardStats> {
   const { data, error } = await supabase
     .from('records')
@@ -157,20 +176,32 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
   const in90Days = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000)
 
   const statusMap = new Map<string, number>()
+  // Rate sheets counted so far, so a multi-lane sheet contributes one bar.
+  const countedRateSheets = new Set<string>()
   let needsAttention = 0
   let addedThisWeek = 0
   let addedPrevWeek = 0
   let needsAttentionPrevWeek = 0
   let invoiceCount = 0
   let invoiceCountPrevWeek = 0
-  let sumCharges = 0
-  let recordsWithCharges = 0
-  let overchargeTotal = 0
-  let overchargeCount = 0
 
   for (const row of rows) {
     const status = row.status ?? 'unknown'
-    statusMap.set(status, (statusMap.get(status) ?? 0) + 1)
+    // A rate sheet expands to one record per lane, so counting rows put the same
+    // agreement in the chart once per lane. Invoices are not collapsed: each row
+    // is a separate processing event, and re-uploads of one invoice can disagree
+    // on status, so there is no single status to keep for the invoice.
+    const isRateSheet =
+      (row.details?.document_type as string | undefined) === 'rate_sheet'
+    if (isRateSheet) {
+      const sheetKey = `${row.title ?? ''}|${expiryOf(row) ?? ''}`
+      if (!countedRateSheets.has(sheetKey)) {
+        countedRateSheets.add(sheetKey)
+        statusMap.set(status, (statusMap.get(status) ?? 0) + 1)
+      }
+    } else {
+      statusMap.set(status, (statusMap.get(status) ?? 0) + 1)
+    }
     const createdAt = new Date(row.created_at)
     const isAttention = ATTENTION_STATUSES.includes(status.toLowerCase())
 
@@ -189,21 +220,52 @@ async function fetchDashboardStats(): Promise<DashboardStats> {
       if (isAttention) needsAttentionPrevWeek += 1
     }
 
+    // Money is accumulated per distinct invoice after this loop, not per row —
+    // see invoiceTotals below.
+  }
+  // Money is accumulated per distinct invoice rather than per row. Re-uploading
+  // the same invoice under a different filename writes another record — the poller
+  // only clears rows sharing a source_file_path — so summing rows counted one
+  // customer's 5,312.31 invoice twice and their 1,606.32 invoice three times.
+  const invoiceTotals = new Map<
+    string,
+    { charges: number | null; overcharge: number }
+  >()
+  for (const row of rows) {
+    if ((row.details?.document_type as string | undefined) !== 'invoice') continue
+    const key = invoiceKey(row)
+    const totals = invoiceTotals.get(key) ?? { charges: null, overcharge: 0 }
     const charges = toNumber(row.details?.total_charges)
-    if (charges !== null) {
-      sumCharges += charges
-      recordsWithCharges += 1
+    // Highest figure wins when re-uploads disagree, and a missing total never
+    // replaces a present one.
+    if (charges !== null && (totals.charges === null || charges > totals.charges)) {
+      totals.charges = charges
     }
-
-    // Only positive figures. A negative overcharge_amount means the carrier
-    // billed below the contracted rate, which is not an overcharge and would
-    // otherwise net the headline finding down towards zero.
+    // Only positive figures. A negative overcharge_amount means the carrier billed
+    // below the contracted rate, which is not an overcharge and would otherwise
+    // net the headline finding down towards zero.
     const overcharge = toNumber(row.details?.overcharge_amount)
     if (overcharge !== null && overcharge > 0) {
-      overchargeTotal += overcharge
+      totals.overcharge = Math.max(totals.overcharge, overcharge)
+    }
+    invoiceTotals.set(key, totals)
+  }
+
+  let sumCharges = 0
+  let recordsWithCharges = 0
+  let overchargeTotal = 0
+  let overchargeCount = 0
+  for (const totals of invoiceTotals.values()) {
+    if (totals.charges !== null) {
+      sumCharges += totals.charges
+      recordsWithCharges += 1
+    }
+    if (totals.overcharge > 0) {
+      overchargeTotal += totals.overcharge
       overchargeCount += 1
     }
   }
+
   const totalPrevWeek = rows.filter((r) => new Date(r.created_at) < weekAgo).length
 
   // Rate schedules only: an invoice's due_date is a *payment* due date, so
