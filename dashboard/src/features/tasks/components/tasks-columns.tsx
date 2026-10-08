@@ -35,6 +35,21 @@ function formatDueDate(iso: string | null | undefined): string | null {
   return label
 }
 
+// A record is either an invoice or a rate agreement, and the two mean different
+// things: a rate agreement is what later invoices are checked against.
+// The poller writes the classification to details.document_type, which the
+// fetch already returns, so labelling a row needs no change to the query.
+export function documentTypeLabel(value: unknown): string {
+  if (value === 'rate_sheet') return 'Rate agreement'
+  if (value === 'invoice') return 'Invoice'
+  if (typeof value === 'string' && value.trim()) {
+    return value
+      .replace(/[_-]+/g, ' ')
+      .replace(/\b\w/g, (c) => c.toUpperCase())
+  }
+  return ''
+}
+
 export const tasksColumns: ColumnDef<Task>[] = [
   {
     id: 'select',
@@ -94,6 +109,25 @@ export const tasksColumns: ColumnDef<Task>[] = [
         </div>
       )
     },
+  },
+  {
+    id: 'document_type',
+    // Label rather than the raw value, because 'rate_sheet' reads as jargon.
+    // Filtering happens on the label, so the filter options are derived from
+    // the loaded rows in tasks-table and always match what is on screen.
+    accessorFn: (row) => documentTypeLabel(row.details?.document_type),
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title='Document' />
+    ),
+    meta: { className: 'ps-1', tdClassName: 'ps-4' },
+    cell: ({ row }) => {
+      const label = String(row.getValue('document_type') ?? '')
+      return (
+        <span className='text-sm text-muted-foreground'>{label || '\u2014'}</span>
+      )
+    },
+    filterFn: (row, id, value) =>
+      (value as string[]).includes(String(row.getValue(id))),
   },
   {
     accessorKey: 'status',

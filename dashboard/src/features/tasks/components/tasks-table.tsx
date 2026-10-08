@@ -1,5 +1,5 @@
 import { FILTER_PLACEHOLDER } from '@/product-config'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { getRouteApi } from '@tanstack/react-router'
 import {
   type SortingState,
@@ -27,7 +27,7 @@ import { DataTablePagination, DataTableToolbar } from '@/components/data-table'
 import { statuses } from '../data/data'
 import { type Task } from '../data/schema'
 import { DataTableBulkActions } from './data-table-bulk-actions'
-import { tasksColumns as columns } from './tasks-columns'
+import { documentTypeLabel, tasksColumns as columns } from './tasks-columns'
 
 const route = getRouteApi('/_authenticated/tasks/')
 
@@ -62,6 +62,7 @@ export function TasksTable({ data }: DataTableProps) {
     globalFilter: { enabled: true, key: 'filter' },
     columnFilters: [
       { columnId: 'status', searchKey: 'status', type: 'array' },
+      { columnId: 'document_type', searchKey: 'document_type', type: 'array' },
     ],
   })
 
@@ -99,6 +100,19 @@ export function TasksTable({ data }: DataTableProps) {
     onColumnFiltersChange,
   })
 
+  // Options come from the data rather than a hardcoded list, so the filter
+  // cannot drift from the values the poller actually writes.
+  const documentFilterOptions = useMemo(() => {
+    const labels = new Set<string>()
+    for (const row of data) {
+      const label = documentTypeLabel(row.details?.document_type)
+      if (label) labels.add(label)
+    }
+    return Array.from(labels)
+      .sort()
+      .map((label) => ({ label, value: label }))
+  }, [data])
+
   const pageCount = table.getPageCount()
   useEffect(() => {
     ensurePageInRange(pageCount)
@@ -120,7 +134,15 @@ export function TasksTable({ data }: DataTableProps) {
             title: 'Status',
             options: statuses,
           },
-
+          ...(documentFilterOptions.length > 0
+            ? [
+                {
+                  columnId: 'document_type',
+                  title: 'Document',
+                  options: documentFilterOptions,
+                },
+              ]
+            : []),
         ]}
       />
       <div className='overflow-hidden rounded-md border'>
