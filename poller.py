@@ -6,7 +6,6 @@ import requests
 SUPABASE_URL = os.environ['SUPABASE_URL']
 SUPABASE_SERVICE_KEY = os.environ['SUPABASE_SERVICE_KEY']
 PRODUCT_ID = os.environ['PRODUCT_ID']
-ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 
 BUCKET = 'uploads'
 RESULTS_BUCKET = 'results'
