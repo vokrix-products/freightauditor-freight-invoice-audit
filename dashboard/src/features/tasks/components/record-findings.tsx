@@ -1,6 +1,6 @@
 import { AlertTriangle, CheckCircle2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
-import { formatCurrency } from '@/lib/format'
+import { formatCurrency, noteList, toNumber } from '@/lib/format'
 import { statuses, severityToBadgeVariant } from '../data/data'
 import { type Task } from '../data/schema'
 
@@ -96,17 +96,6 @@ function asRecord(details: unknown): Record<string, unknown> {
   return {}
 }
 
-function asStringList(value: unknown): string[] {
-  if (typeof value === 'string') {
-    const trimmed = value.trim()
-    return trimmed ? [trimmed] : []
-  }
-  if (!Array.isArray(value)) return []
-  return value
-    .filter((v): v is string => typeof v === 'string' && v.trim() !== '')
-    .map((v) => v.trim())
-}
-
 function asLineItems(value: unknown): Record<string, unknown>[] {
   if (!Array.isArray(value)) return []
   return value.filter(
@@ -128,10 +117,11 @@ function displayValue(key: string, value: unknown): string {
     if (money) return money
   }
   if (WEIGHT_FIELDS.has(key)) {
-    const raw = typeof value === 'number' ? value : Number(String(value).replace(/[^0-9.]/g, ''))
-    if (Number.isFinite(raw) && String(value).trim() !== '') {
-      return `${raw.toLocaleString()} lbs`
-    }
+    // A weight may arrive as a number or as a formatted string like
+    // "12,480 lbs", so it goes through toNumber() like every other numeric
+    // read rather than trusting the shape.
+    const pounds = toNumber(value)
+    if (pounds !== null) return `${pounds.toLocaleString()} lbs`
   }
   if (typeof value === 'boolean') return value ? 'Yes' : 'No'
   return String(value)
@@ -139,14 +129,17 @@ function displayValue(key: string, value: unknown): string {
 
 export function RecordFindings({ task }: { task: Task }) {
   const details = asRecord(task.details)
-  const notes = asStringList(details._notes)
+  const notes = noteList(details._notes)
   const lineItems = asLineItems(details.invoice_line_items)
 
   const statusDef = statuses.find((s) => s.value === task.status)
   const severity = statusDef?.severity ?? 'neutral'
 
-  const overcharge = Number(details.overcharge_amount)
-  const hasOvercharge = Number.isFinite(overcharge) && overcharge > 0
+  // toNumber(), not Number(). The poller may write a formatted string such as
+  // "$1,467.64", and Number() turns that into NaN - which would silently hide
+  // the overcharge box instead of showing the figure it was calculated from.
+  const overcharge = toNumber(details.overcharge_amount)
+  const hasOvercharge = overcharge !== null && overcharge > 0
 
   const entries = Object.entries(details)
     .filter(([key]) => !HIDDEN_FIELDS.has(key))
@@ -201,7 +194,7 @@ export function RecordFindings({ task }: { task: Task }) {
             Billed above the contracted rate
           </p>
           <p className='text-lg font-semibold'>
-            {formatCurrency(overcharge) ?? String(overcharge)}
+            {formatCurrency(overcharge)}
           </p>
         </div>
       )}
@@ -212,32 +205,33 @@ export function RecordFindings({ task }: { task: Task }) {
             Line items
           </p>
           <div className='divide-y'>
-            {lineItems.map((item, index) => (
-              <div key={index} className='px-3 py-2 text-xs'>
-                <div className='flex justify-between gap-3'>
-                  <span className='font-medium'>
-                    {String(item.description ?? 'Unnamed line')}
-                  </span>
-                  <span className='shrink-0 font-medium'>
-                    {formatCurrency(item.amount) ?? String(item.amount ?? '—')}
-                  </span>
-                </div>
-                <div className='mt-0.5 flex flex-wrap gap-x-3 text-muted-foreground'>
-                  {item.freight_class !== undefined && (
-                    <span>Class {String(item.freight_class)}</span>
-                  )}
-                  {item.weight !== undefined && (
-                    <span>{Number(item.weight).toLocaleString()} lbs</span>
-                  )}
-                  {item.rate_per_100lbs !== undefined && (
-                    <span>
-                      {formatCurrency(item.rate_per_100lbs) ?? String(item.rate_per_100lbs)}
-                      /100lbs
+            {lineItems.map((item, index) => {
+              const pounds = toNumber(item.weight)
+              const ratePerHundred = toNumber(item.rate_per_100lbs)
+              return (
+                <div key={index} className='px-3 py-2 text-xs'>
+                  <div className='flex justify-between gap-3'>
+                    <span className='font-medium'>
+                      {String(item.description ?? 'Unnamed line')}
                     </span>
-                  )}
+                    <span className='shrink-0 font-medium'>
+                      {formatCurrency(item.amount) ?? String(item.amount ?? '\u2014')}
+                    </span>
+                  </div>
+                  <div className='mt-0.5 flex flex-wrap gap-x-3 text-muted-foreground'>
+                    {item.freight_class !== undefined && (
+                      <span>Class {String(item.freight_class)}</span>
+                    )}
+                    {pounds !== null && (
+                      <span>{pounds.toLocaleString()} lbs</span>
+                    )}
+                    {ratePerHundred !== null && (
+                      <span>{formatCurrency(ratePerHundred)}/100lbs</span>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </div>
       )}

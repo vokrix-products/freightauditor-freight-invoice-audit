@@ -29,16 +29,22 @@ export function formatCurrency(value: unknown): string | null {
 }
 
 // The poller writes human-readable explanations to details._notes as an array
-// (e.g. "rate sheet expired"). Surface the first one so a flagged row explains
-// itself without opening anything.
-export function firstNote(value: unknown): string | null {
+// (e.g. "rate sheet expired"). Returns every one of them, in the order written,
+// so a row can show the first and a drill-down can show them all.
+export function noteList(value: unknown): string[] {
   if (typeof value === 'string') {
     const trimmed = value.trim()
-    return trimmed === '' ? null : trimmed
+    return trimmed === '' ? [] : [trimmed]
   }
-  if (!Array.isArray(value)) return null
-  for (const entry of value) {
-    if (typeof entry === 'string' && entry.trim() !== '') return entry.trim()
-  }
-  return null
+  if (!Array.isArray(value)) return []
+  return value
+    .filter(
+      (entry): entry is string => typeof entry === 'string' && entry.trim() !== ''
+    )
+    .map((entry) => entry.trim())
+}
+
+// The first note, so a flagged row explains itself without opening anything.
+export function firstNote(value: unknown): string | null {
+  return noteList(value)[0] ?? null
 }
