@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { PRODUCT_ARCHETYPE } from '@/product-config'
 import { Badge } from '@/components/ui/badge'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { Button } from '@/components/ui/button'
 import { RippleButton } from '@/components/ui/ripple-button'
 import { ShineBorder } from '@/components/ui/shine-border'
@@ -87,7 +92,30 @@ function statusLabel(status: string): string {
   if (status === 'processing') return 'Processing'
   if (status === 'completed') return 'Done'
   if (status === 'failed') return 'Failed'
+  // Named explicitly. Without a case here the raw database value is returned,
+  // which is why this one rendered as lowercase "archived".
+  if (status === 'archived') return 'Archived'
   return status
+}
+
+// Hover text, only for statuses that need explaining. Anything without an entry
+// stays a plain badge with no tooltip wrapper around it.
+const STATUS_TOOLTIPS: Record<string, string> = {
+  archived: 'Previous upload \u2014 kept for your records.',
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const badge = (
+    <Badge variant={statusBadgeVariant(status)}>{statusLabel(status)}</Badge>
+  )
+  const explanation = STATUS_TOOLTIPS[status]
+  if (!explanation) return badge
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{badge}</TooltipTrigger>
+      <TooltipContent side='left'>{explanation}</TooltipContent>
+    </Tooltip>
+  )
 }
 
 function formatTime(iso: string) {
@@ -307,9 +335,7 @@ export function JobsCard() {
                 </p>
               </div>
               <div className='flex items-center gap-2'>
-                <Badge variant={statusBadgeVariant(job.status)}>
-                  {statusLabel(job.status)}
-                </Badge>
+                <StatusBadge status={job.status} />
                 {job.status === 'completed' && job.output_file_path && (
                   <Button
                     variant='ghost'
