@@ -4,19 +4,11 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { DataTableColumnHeader } from '@/components/data-table'
-import { supabase } from '@/lib/supabase'
 import { firstNote } from '@/lib/format'
 import { statuses, severityToBadgeVariant } from '../data/data'
 import { type Task } from '../data/schema'
 import { DataTableRowActions } from './data-table-row-actions'
-
-async function openSourceFile(path: string) {
-  const { data, error } = await supabase.storage
-    .from('uploads')
-    .createSignedUrl(path, 60 * 60) // 1 hour
-  if (error || !data?.signedUrl) return
-  window.open(data.signedUrl, '_blank')
-}
+import { openSourceFile } from './open-source-file'
 
 function formatDueDate(iso: string | null | undefined): string | null {
   if (!iso) return null
