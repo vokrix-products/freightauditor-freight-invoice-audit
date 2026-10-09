@@ -28,6 +28,7 @@ import { SelectDropdown } from '@/components/select-dropdown'
 import { supabase } from '@/lib/supabase'
 import { statuses, severityToBadgeVariant } from '../data/data'
 import { type Task } from '../data/schema'
+import { RecordFindings } from './record-findings'
 import { useUpsertTask } from '../data/tasks'
 
 type TaskMutateDrawerProps = {
@@ -108,10 +109,6 @@ export function TasksMutateDrawer({
   const severity = statusDef?.severity ?? 'neutral'
   const badgeVariant = severityToBadgeVariant[severity]
 
-  const details = currentRow?.details
-  const parsedDetails = typeof details === 'string' ? (() => { try { return JSON.parse(details) } catch { return {} } })() : (details ?? {})
-  const detailEntries = Object.entries(parsedDetails).filter(([, v]) => v !== null && v !== '')
-
   const dueFormatted = formatDueDate(currentRow?.due_date)
   const isOverdue = dueFormatted?.includes('overdue') ?? false
   const isSoon =
@@ -169,20 +166,7 @@ export function TasksMutateDrawer({
               )}
             </div>
 
-            {detailEntries.length > 0 && (
-              <div className='rounded-md border bg-muted/40 px-3 py-2 space-y-1'>
-                {detailEntries.map(([key, value]) => (
-                  <div key={key} className='flex gap-2 text-xs'>
-                    <span className='text-muted-foreground capitalize min-w-28 shrink-0'>
-                      {key.replace(/_/g, ' ')}
-                    </span>
-                    <span className='font-medium break-all'>
-                      {String(value)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
+            <RecordFindings task={currentRow!} />
 
             <Separator />
           </div>
