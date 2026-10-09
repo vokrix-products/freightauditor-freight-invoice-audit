@@ -44,7 +44,13 @@ async function exportToCSV<TData>(table: Table<TData>) {
   } catch (e) {
     void e
   }
-  const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' })
+  // The byte-order mark and the explicit charset are both needed. Excel reads a
+  // CSV that has neither in the system codepage, so a value such as the arrow in
+  // a lane label arrives as mojibake. Every value in this export was ASCII until
+  // the Lane column was added.
+  const blob = new Blob(['\ufeff' + csvRows.join('\n')], {
+    type: 'text/csv;charset=utf-8',
+  })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
