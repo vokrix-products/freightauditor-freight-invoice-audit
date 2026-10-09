@@ -6,5 +6,9 @@ declare module '@tanstack/react-table' {
     className?: string // apply to both th and td
     tdClassName?: string
     thClassName?: string
+    // The heading as a plain string. Anything that cannot render a React node
+    // reads this - the CSV export writes its header row from it - and falls
+    // back to the raw column id where a column has not set one.
+    title?: string
   }
 }

@@ -27,7 +27,10 @@ async function exportToCSV<TData>(table: Table<TData>) {
   const rows = table.getFilteredRowModel().rows
   if (rows.length === 0) return
   const cols = table.getAllColumns().filter(c => c.getIsVisible() && c.id !== 'select' && c.id !== 'actions')
-  const headers = cols.map(c => c.id)
+  // The heading a person reads, not the column id. Without a title on the
+  // column definition this falls back to the id, which is how an export came
+  // out headed "source_file_path" and "due_date".
+  const headers = cols.map(c => c.columnDef.meta?.title ?? c.id)
   const csvRows = [
     headers.join(','),
     ...rows.map(row =>

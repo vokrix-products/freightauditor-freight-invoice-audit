@@ -60,6 +60,9 @@ export function laneLabel(row: Task): string {
   return origin || destination || ''
 }
 
+// Every column carries the heading a person reads in meta.title, because the
+// CSV export writes its header row from there. The React header above it is a
+// render function, which an export cannot read.
 export const tasksColumns: ColumnDef<Task>[] = [
   {
     id: 'select',
@@ -93,6 +96,7 @@ export const tasksColumns: ColumnDef<Task>[] = [
     cell: ({ row }) => <div className='w-20'>{row.getValue('id')}</div>,
     enableSorting: false,
     enableHiding: true,
+    meta: { title: 'ID' },
   },
   {
     accessorKey: 'title',
@@ -100,6 +104,7 @@ export const tasksColumns: ColumnDef<Task>[] = [
       <DataTableColumnHeader column={column} title='Name' />
     ),
     meta: {
+      title: 'Name',
       className: 'ps-1 max-w-0 w-2/3',
       tdClassName: 'ps-4',
     },
@@ -129,7 +134,7 @@ export const tasksColumns: ColumnDef<Task>[] = [
     header: ({ column }) => (
       <DataTableColumnHeader column={column} title='Document' />
     ),
-    meta: { className: 'ps-1', tdClassName: 'ps-4' },
+    meta: { title: 'Document', className: 'ps-1', tdClassName: 'ps-4' },
     cell: ({ row }) => {
       const label = String(row.getValue('document_type') ?? '')
       return (
@@ -145,7 +150,7 @@ export const tasksColumns: ColumnDef<Task>[] = [
     header: ({ column }) => (
       <DataTableColumnHeader column={column} title='Lane' />
     ),
-    meta: { className: 'ps-1 max-w-0 w-1/4', tdClassName: 'ps-4' },
+    meta: { title: 'Lane', className: 'ps-1 max-w-0 w-1/4', tdClassName: 'ps-4' },
     cell: ({ row }) => {
       const label = String(row.getValue('lane') ?? '')
       if (!label) {
@@ -164,7 +169,7 @@ export const tasksColumns: ColumnDef<Task>[] = [
     header: ({ column }) => (
       <DataTableColumnHeader column={column} title='Status' />
     ),
-    meta: { className: 'ps-1', tdClassName: 'ps-4' },
+    meta: { title: 'Status', className: 'ps-1', tdClassName: 'ps-4' },
     cell: ({ row }) => {
       const statusValue = row.getValue('status') as string
       const statusDef = statuses.find((s) => s.value === statusValue)
@@ -190,7 +195,7 @@ export const tasksColumns: ColumnDef<Task>[] = [
     header: ({ column }) => (
       <DataTableColumnHeader column={column} title='Due / Expires' />
     ),
-    meta: { className: 'ps-1', tdClassName: 'ps-4' },
+    meta: { title: 'Due / Expires', className: 'ps-1', tdClassName: 'ps-4' },
     cell: ({ row }) => {
       const val = row.getValue('due_date') as string | null | undefined
       const formatted = formatDueDate(val)
@@ -235,6 +240,7 @@ export const tasksColumns: ColumnDef<Task>[] = [
     // write the original upload path to records.source_file_path.
     id: 'source',
     header: () => <span className='text-xs text-muted-foreground'>Source</span>,
+    meta: { title: 'Source' },
     cell: ({ row }) => {
       const path = row.original.source_file_path
       if (!path) return null
