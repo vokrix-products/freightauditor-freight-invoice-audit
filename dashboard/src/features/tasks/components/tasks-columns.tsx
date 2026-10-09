@@ -42,6 +42,24 @@ export function documentTypeLabel(value: unknown): string {
   return ''
 }
 
+// A rate agreement is expanded into one record per contracted lane, so six rows
+// carrying the same carrier, note, type, status and date are six different
+// lanes, not six copies of one file. Nothing on the row said which lane, which
+// made the list look like it had repeated itself. The lane is also the field the
+// audit matches an invoice against, so it belongs on the row for both types.
+export function laneLabel(row: Task): string {
+  const details = row.details
+  const parts =
+    details?.document_type === 'rate_sheet'
+      ? [details?.origin_zone_zip_postal, details?.destination_zone_zip_postal]
+      : [details?.origin_location, details?.destination_location]
+  const [origin, destination] = parts.map((part) =>
+    typeof part === 'string' ? part.trim() : ''
+  )
+  if (origin && destination) return `${origin} \u2192 ${destination}`
+  return origin || destination || ''
+}
+
 export const tasksColumns: ColumnDef<Task>[] = [
   {
     id: 'select',
@@ -122,6 +140,26 @@ export const tasksColumns: ColumnDef<Task>[] = [
       (value as string[]).includes(String(row.getValue(id))),
   },
   {
+    id: 'lane',
+    accessorFn: (row) => laneLabel(row),
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title='Lane' />
+    ),
+    meta: { className: 'ps-1 max-w-0 w-1/4', tdClassName: 'ps-4' },
+    cell: ({ row }) => {
+      const label = String(row.getValue('lane') ?? '')
+      if (!label) {
+        return <span className='text-muted-foreground'>{'\u2014'}</span>
+      }
+      return (
+        <span className='truncate text-xs text-muted-foreground' title={label}>
+          {label}
+        </span>
+      )
+    },
+    enableSorting: false,
+  },
+  {
     accessorKey: 'status',
     header: ({ column }) => (
       <DataTableColumnHeader column={column} title='Status' />
@@ -160,18 +198,34 @@ export const tasksColumns: ColumnDef<Task>[] = [
       const isOverdue = formatted.includes('overdue')
       const isSoon =
         !isOverdue && formatted.includes('d)') && parseInt(formatted.split('(')[1]) <= 30
+      // One column carries two different dates: an invoice's payment due date,
+      // and a rate agreement's expiry. The header names the column, not which
+      // date a given row is showing. When the document type could not be read
+      // there is nothing to say, so no caption is shown rather than guessing.
+      const documentType = row.original.details?.document_type
+      const caption =
+        documentType === 'rate_sheet'
+          ? 'Agreement expires'
+          : documentType === 'invoice'
+            ? 'Invoice due'
+            : null
       return (
-        <span
-          className={
-            isOverdue
-              ? 'text-destructive font-medium'
-              : isSoon
-                ? 'text-warning font-medium'
-                : 'text-foreground'
-          }
-        >
-          {formatted}
-        </span>
+        <div className='flex flex-col gap-0.5'>
+          <span
+            className={
+              isOverdue
+                ? 'text-destructive font-medium'
+                : isSoon
+                  ? 'text-warning font-medium'
+                  : 'text-foreground'
+            }
+          >
+            {formatted}
+          </span>
+          {caption && (
+            <span className='text-xs text-muted-foreground'>{caption}</span>
+          )}
+        </div>
       )
     },
   },
