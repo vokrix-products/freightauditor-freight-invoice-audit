@@ -10,7 +10,7 @@ import {
   useState,
 } from 'react'
 import { ChevronLeft, ChevronRight, Compass, X } from 'lucide-react'
-import { SHOW_TASKS_NAV, TASKS_NAV_LABEL } from '@/product-config'
+import { RECORDS_LABEL, SHOW_TASKS_NAV, TASKS_NAV_LABEL } from '@/product-config'
 import { BorderBeam } from '@/components/magicui/border-beam'
 import { PulsatingButton } from '@/components/magicui/pulsating-button'
 import { Button } from '@/components/ui/button'
@@ -48,21 +48,18 @@ function isVisible(element: Element | null): element is Element {
 }
 
 const NAV_SHORT = SHOW_TASKS_NAV ? TASKS_NAV_LABEL : 'the records page'
-const NAV_LINE = SHOW_TASKS_NAV
-  ? `Dashboard is this page. ${TASKS_NAV_LABEL} is every document you have uploaded, with its status and the notes behind any finding. `
-  : `Dashboard is this page. `
 
 export const PRODUCT_TOUR_STEPS: TourStep[] = [
   {
     target: "[data-tour='welcome']",
-    title: 'Where your audits land',
-    body: "Everything the audit produces for your account appears on this page. The five numbers across the top are the summary; the cards underneath are the detail behind them.\n\nNothing is audited until a file is uploaded, so a new account starts empty. This walkthrough takes about a minute - Esc leaves it at any point, and the button up here replays it.",
+    title: 'Your audit results live here',
+    body: "Upload a carrier rate agreement, then its invoices — every discrepancy we find shows up on this page: overcharges, billing errors, and the figures behind each one.\n\nThe five numbers at the top are your totals. The cards below are the individual findings. Takes 60 seconds to walk through — Esc skips it, the button up here replays it.",
     placement: 'bottom',
   },
   {
     target: "[data-tour='sidebar']",
-    title: 'Moving between pages',
-    body: `${NAV_LINE}The links at the bottom of this column go to Support, the Audit Log and Help, and the next three steps explain each. On a narrow window this column is hidden; the button at the top left brings it back.`,
+    title: 'Getting around',
+    body: `Dashboard is where your results live. ${RECORDS_LABEL} is every file you’ve uploaded — status, findings, notes. The links at the bottom go to Support, Audit Log, and Help.`,
     placement: 'right',
   },
   {
@@ -86,7 +83,7 @@ export const PRODUCT_TOUR_STEPS: TourStep[] = [
   {
     target: "[data-tour='search']",
     title: 'Search',
-    body: 'Opens a panel for moving to another page without the sidebar. Cmd+K, or Ctrl+K on Windows, opens it from anywhere.',
+    body: 'Jump anywhere without the sidebar. Hit Cmd+K (Ctrl+K on Windows) from any page.',
     placement: 'bottom',
   },
   {
@@ -109,20 +106,20 @@ export const PRODUCT_TOUR_STEPS: TourStep[] = [
   },
   {
     target: "[data-tour='upload']",
-    title: 'Upload a rate agreement first',
-    body: "Both documents go in this one box: the carrier's rate agreement, and the invoices to check against it. The agreement has to be on file first, because an invoice is only priced against rates already there. One uploaded before its agreement gets the missing-field, arithmetic and duplicate checks only, and is not re-audited afterwards.\n\nOne agreement covers that carrier's future invoices. Text-layer PDF, Excel, CSV or plain text; a scanned page has no text layer to read, and there is no OCR.",
+    title: 'Upload your rate agreement first',
+    body: "This box takes both: the carrier’s rate agreement and the invoices to check against it. The agreement must be uploaded first — invoices are priced against rates already on file.\n\nAn invoice uploaded without its agreement gets basic checks only (missing fields, arithmetic, duplicates) and won’t be re-audited later.\n\nOne agreement covers all future invoices from that carrier. Accepted formats: text-layer PDF, Excel, CSV, plain text. Scanned pages have no text to read — no OCR.",
     placement: 'bottom',
   },
   {
     target: "[data-tour='stats']",
-    title: 'The five numbers',
-    body: "Freight Invoice Audits - every invoice file processed, so a re-upload counts again.\nFlagged for Review - the records the audit says a person should look at.\nOvercharges Found - money billed above the contracted rate, and how many invoices it was found on.\nRate Agreements Expired - agreements past their expiry date, counted once per agreement however many lanes it covers.\nCharges Reviewed - the invoice totals added up, counted once per invoice so a re-upload cannot inflate it.",
+    title: 'The five numbers explained',
+    body: `${RECORDS_LABEL} — total invoice files processed. A re-upload counts as a new one.\n\nFlagged for Review — records the audit thinks a person should look at.\n\nOvercharges Found — money billed above your contracted rate, and how many invoices it appeared on.\n\nRate Agreements Expired — agreements past their end date. Counted per agreement, not per lane.\n\nCharges Reviewed — invoice totals added up across all audits. Re-uploads don’t inflate it.`,
     placement: 'bottom',
   },
   {
     target: "[data-tour='breakdown']",
-    title: 'Every record, by status',
-    body: "One bar per status that actually occurs among the documents on this page.\n\nValid - the required fields are present and every check passed.\nFlagged - a duplicate, an overcharge, a variance, or a total that does not reconcile.\nMissing - a required field was not found on the document.\nExpired - a rate agreement past its expiry date.\nContract-Review - needs a person: the lane could not be priced against the contract.\nUnmapped - the document type could not be determined.\n\nA rate agreement is counted once per agreement here, not once per lane.",
+    title: 'What happened to each file you uploaded',
+    body: "After you upload a carrier invoice or rate agreement, we run checks on it — looking for overcharges, missing data, expired rates, and billing errors. Each file gets a status based on what we found.\n\nThis chart shows how your uploads are spread across those outcomes.\n\nValid — no issues found.\nFlagged — something needs attention: an overcharge, duplicate, or number that doesn’t add up.\nMissing — we couldn’t find a required piece of information on the document.\nExpired — the rate agreement has passed its end date.\nContract-Review — we couldn’t price this shipment against your contract. Needs a manual check.\nUnmapped — we couldn’t tell what type of document this is.",
     placement: 'bottom',
   },
   {
