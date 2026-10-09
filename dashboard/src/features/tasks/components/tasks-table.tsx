@@ -28,6 +28,7 @@ import { statuses } from '../data/data'
 import { type Task } from '../data/schema'
 import { DataTableBulkActions } from './data-table-bulk-actions'
 import { documentTypeLabel, tasksColumns as columns } from './tasks-columns'
+import { useTasks } from './tasks-provider'
 
 const route = getRouteApi('/_authenticated/tasks/')
 
@@ -40,6 +41,7 @@ export function TasksTable({ data }: DataTableProps) {
   const [rowSelection, setRowSelection] = useState({})
   const [sorting, setSorting] = useState<SortingState>([])
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({ id: false })
+  const { setOpen, setCurrentRow } = useTasks()
 
   // Local state management for table (uncomment to use local-only state, not synced with URL)
   // const [globalFilter, onGlobalFilterChange] = useState('')
@@ -178,6 +180,21 @@ export function TasksTable({ data }: DataTableProps) {
                 <TableRow
                   key={row.id}
                   data-state={row.getIsSelected() && 'selected'}
+                  className='cursor-pointer'
+                  onClick={(event) => {
+                    // Only a click on the row itself opens the panel. The
+                    // checkbox, the source-file button and the actions menu
+                    // keep their own behaviour.
+                    if (
+                      (event.target as HTMLElement).closest(
+                        'button, a, input, [role="checkbox"], [role="menuitem"]'
+                      )
+                    ) {
+                      return
+                    }
+                    setCurrentRow(row.original)
+                    setOpen('view')
+                  }}
                 >
                   {row.getVisibleCells().map((cell) => (
                     <TableCell

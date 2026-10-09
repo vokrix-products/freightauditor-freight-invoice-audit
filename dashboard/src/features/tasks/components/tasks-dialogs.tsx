@@ -3,6 +3,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { useDeleteTask } from '../data/tasks'
 import { TasksImportDialog } from './tasks-import-dialog'
 import { TasksMutateDrawer } from './tasks-mutate-drawer'
+import { TasksViewSheet } from './tasks-view-sheet'
 import { useTasks } from './tasks-provider'
 
 export function TasksDialogs() {
@@ -25,6 +26,13 @@ export function TasksDialogs() {
 
       {currentRow && (
         <>
+          <TasksViewSheet
+            key={`task-view-${currentRow.id}`}
+            open={open === 'view'}
+            onOpenChange={(next) => setOpen(next ? 'view' : null)}
+            currentRow={currentRow}
+          />
+
           <TasksMutateDrawer
             key={`task-update-${currentRow.id}`}
             open={open === 'update'}

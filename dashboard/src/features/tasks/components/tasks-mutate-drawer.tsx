@@ -25,10 +25,10 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { SelectDropdown } from '@/components/select-dropdown'
-import { supabase } from '@/lib/supabase'
 import { statuses, severityToBadgeVariant } from '../data/data'
 import { type Task } from '../data/schema'
 import { RecordFindings } from './record-findings'
+import { openSourceFile } from './open-source-file'
 import { useUpsertTask } from '../data/tasks'
 
 type TaskMutateDrawerProps = {
@@ -42,14 +42,6 @@ const formSchema = z.object({
   status: z.string().min(1, 'Please select a status.'),
 })
 type TaskForm = z.infer<typeof formSchema>
-
-async function openSourceFile(path: string) {
-  const { data, error } = await supabase.storage
-    .from('uploads')
-    .createSignedUrl(path, 60 * 60)
-  if (error || !data?.signedUrl) return
-  window.open(data.signedUrl, '_blank')
-}
 
 function formatDueDate(iso: string | null | undefined): string | null {
   if (!iso) return null
