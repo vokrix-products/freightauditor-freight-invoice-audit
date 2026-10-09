@@ -24,6 +24,11 @@ import { useDashboardStats } from './data/dashboard'
 import { supabase } from '@/lib/supabase'
 import { Skeleton } from '@/components/ui/skeleton'
 import { NumberTicker } from '@/components/magicui/number-ticker'
+import {
+  ProductTourProvider,
+  TourTrigger,
+} from '@/components/tour/product-tour'
+import { useAuthStore } from '@/stores/auth-store'
 
 function Trend({ current, previous }: { current: number; previous: number }) {
   if (previous === 0 && current === 0) return null
@@ -44,6 +49,9 @@ function Trend({ current, previous }: { current: number; previous: number }) {
 export function Dashboard() {
   const { data, isLoading } = useDashboardStats()
   const [showUpgradeBanner, setShowUpgradeBanner] = useState(false)
+  // Remembered per person, so the walkthrough does not greet a returning user
+  // as if they had never seen the page.
+  const authUser = useAuthStore((state) => state.auth.user)
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -87,12 +95,23 @@ export function Dashboard() {
           </div>
         )}
         <div className='mb-2 flex items-center justify-between space-y-2'>
-          <h1 className='text-2xl font-bold tracking-tight'>Dashboard</h1>
+          <h1 data-tour='welcome' className='text-2xl font-bold tracking-tight'>
+            Dashboard
+          </h1>
+          <ProductTourProvider
+            storageKey={authUser ? `tour:freightauditor:${authUser.email}` : null}
+          >
+            <TourTrigger />
+          </ProductTourProvider>
         </div>
         <div className='space-y-4'>
-          <JobsCard />
+          {/* Wrapped so the walkthrough can point at the upload area without
+              changing anything JobsCard renders. */}
+          <div data-tour='upload'>
+            <JobsCard />
+          </div>
           {PRODUCT_ARCHETYPE === 'report' && <ReportCard />}
-          <div className='grid gap-4 sm:grid-cols-2 lg:grid-cols-5'>
+          <div data-tour='stats' className='grid gap-4 sm:grid-cols-2 lg:grid-cols-5'>
             <Card>
               <CardHeader className='flex flex-row items-center justify-between space-y-0 pb-2'>
                 <CardTitle className='text-sm font-medium'>{RECORDS_LABEL}</CardTitle>
@@ -195,7 +214,7 @@ export function Dashboard() {
             </Card>
           </div>
           <div className='grid grid-cols-1 gap-4 lg:grid-cols-7'>
-            <Card className='col-span-1 lg:col-span-4'>
+            <Card data-tour='breakdown' className='col-span-1 lg:col-span-4'>
               <CardHeader>
                 <CardTitle>Status Breakdown</CardTitle>
               </CardHeader>
@@ -203,7 +222,7 @@ export function Dashboard() {
                 <Overview />
               </CardContent>
             </Card>
-            <Card className='col-span-1 lg:col-span-3'>
+            <Card data-tour='activity' className='col-span-1 lg:col-span-3'>
               <CardHeader>
                 <CardTitle>Recent Activity</CardTitle>
                 <CardDescription>Latest records added</CardDescription>
@@ -230,7 +249,7 @@ export function Dashboard() {
           </Card>
           {/* What is on file, as opposed to what lapses soon. One entry per
               agreement rather than one per lane, so a 6-lane sheet shows once. */}
-          <Card>
+          <Card data-tour='agreements'>
             <CardHeader>
               <CardTitle>Rate Agreements on File</CardTitle>
               <CardDescription>
