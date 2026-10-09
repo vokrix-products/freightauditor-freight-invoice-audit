@@ -198,18 +198,34 @@ export const tasksColumns: ColumnDef<Task>[] = [
       const isOverdue = formatted.includes('overdue')
       const isSoon =
         !isOverdue && formatted.includes('d)') && parseInt(formatted.split('(')[1]) <= 30
+      // One column carries two different dates: an invoice's payment due date,
+      // and a rate agreement's expiry. The header names the column, not which
+      // date a given row is showing. When the document type could not be read
+      // there is nothing to say, so no caption is shown rather than guessing.
+      const documentType = row.original.details?.document_type
+      const caption =
+        documentType === 'rate_sheet'
+          ? 'Agreement expires'
+          : documentType === 'invoice'
+            ? 'Invoice due'
+            : null
       return (
-        <span
-          className={
-            isOverdue
-              ? 'text-destructive font-medium'
-              : isSoon
-                ? 'text-warning font-medium'
-                : 'text-foreground'
-          }
-        >
-          {formatted}
-        </span>
+        <div className='flex flex-col gap-0.5'>
+          <span
+            className={
+              isOverdue
+                ? 'text-destructive font-medium'
+                : isSoon
+                  ? 'text-warning font-medium'
+                  : 'text-foreground'
+            }
+          >
+            {formatted}
+          </span>
+          {caption && (
+            <span className='text-xs text-muted-foreground'>{caption}</span>
+          )}
+        </div>
       )
     },
   },
