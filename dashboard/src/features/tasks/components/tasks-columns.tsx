@@ -27,6 +27,18 @@ function formatDueDate(iso: string | null | undefined): string | null {
   return label
 }
 
+// "Overdue" reads as a fault, and these are the statuses that already carry
+// one. On any other row - a Valid one above all - the date is shown on its own
+// in ordinary text, because a red fault beside a passed audit says two
+// opposite things about the same document.
+const OVERDUE_IS_A_FINDING = new Set([
+  'flagged:critical',
+  'missing:critical',
+  'expired:warning',
+])
+
+const OVERDUE_MARKER = /\s*\(overdue\)/
+
 // A record is either an invoice or a rate agreement, and the two mean different
 // things: a rate agreement is what later invoices are checked against.
 // The poller writes the classification to details.document_type, which the
@@ -222,6 +234,9 @@ export const tasksColumns: ColumnDef<Task>[] = [
       const isOverdue = formatted.includes('overdue')
       const isSoon =
         !isOverdue && formatted.includes('d)') && parseInt(formatted.split('(')[1]) <= 30
+      const statusValue = String(row.getValue('status') ?? '')
+      const showOverdue = isOverdue && OVERDUE_IS_A_FINDING.has(statusValue)
+      const display = showOverdue ? formatted : formatted.replace(OVERDUE_MARKER, '')
       // One column carries two different dates: an invoice's payment due date,
       // and a rate agreement's expiry. The header names the column, not which
       // date a given row is showing. When the document type could not be read
@@ -237,14 +252,14 @@ export const tasksColumns: ColumnDef<Task>[] = [
         <div className='flex flex-col gap-0.5'>
           <span
             className={
-              isOverdue
+              showOverdue
                 ? 'text-destructive font-medium'
                 : isSoon
                   ? 'text-warning font-medium'
                   : 'text-foreground'
             }
           >
-            {formatted}
+            {display}
           </span>
           {caption && (
             <span className='text-xs text-muted-foreground'>{caption}</span>
