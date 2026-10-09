@@ -63,6 +63,13 @@ export function laneLabel(row: Task): string {
 // Every column carries the heading a person reads in meta.title, because the
 // CSV export writes its header row from there. The React header above it is a
 // render function, which an export cannot read.
+//
+// meta.className is applied to both the header cell and the body cells, which
+// is deliberate: max-w-0 has to reach the td for a truncating child to have
+// something to clip against. Widths are fractions rather than a running total
+// that adds up past 100% - when the fractions over-commit, the browser has to
+// steal the difference from whichever columns are left, which is what pushes
+// one column's content into its neighbour.
 export const tasksColumns: ColumnDef<Task>[] = [
   {
     id: 'select',
@@ -105,7 +112,7 @@ export const tasksColumns: ColumnDef<Task>[] = [
     ),
     meta: {
       title: 'Name',
-      className: 'ps-1 max-w-0 w-2/3',
+      className: 'ps-1 max-w-0 w-1/3',
       tdClassName: 'ps-4',
     },
     cell: ({ row }) => {
@@ -114,6 +121,9 @@ export const tasksColumns: ColumnDef<Task>[] = [
       // name means a flagged row says why it was flagged without a drill-down.
       const note = firstNote(row.original.details?._notes)
       return (
+        // The flex wrapper is load-bearing: it blockifies the spans inside it,
+        // which is what lets truncate clip them. A bare span in a td stays
+        // inline and silently refuses to truncate.
         <div className='flex flex-col gap-0.5'>
           <span className='truncate font-medium'>{row.getValue('title')}</span>
           {note && (
@@ -150,16 +160,21 @@ export const tasksColumns: ColumnDef<Task>[] = [
     header: ({ column }) => (
       <DataTableColumnHeader column={column} title='Lane' />
     ),
-    meta: { title: 'Lane', className: 'ps-1 max-w-0 w-1/4', tdClassName: 'ps-4' },
+    meta: { title: 'Lane', className: 'ps-1 max-w-0 w-1/5', tdClassName: 'ps-4' },
     cell: ({ row }) => {
       const label = String(row.getValue('lane') ?? '')
       if (!label) {
         return <span className='text-muted-foreground'>{'\u2014'}</span>
       }
+      // Same structure as the Name column, and for the same reason: without
+      // the block-level wrapper the span stays inline and truncate does
+      // nothing, so a long lane name runs over the Status badge beside it.
       return (
-        <span className='truncate text-xs text-muted-foreground' title={label}>
-          {label}
-        </span>
+        <div className='flex flex-col gap-0.5'>
+          <span className='truncate text-xs text-muted-foreground' title={label}>
+            {label}
+          </span>
+        </div>
       )
     },
     enableSorting: false,
@@ -176,8 +191,11 @@ export const tasksColumns: ColumnDef<Task>[] = [
       const severity = statusDef?.severity ?? 'neutral'
       const badgeVariant = severityToBadgeVariant[severity]
       const Icon = statusDef?.icon
+      // No fixed width here. A reserved width narrower than the badge spilled
+      // the label into the next column; the cell now takes the width of its
+      // widest badge and the badges still line up on the left.
       return (
-        <div className='flex w-32 items-center gap-2'>
+        <div className='flex items-center gap-2'>
           <Badge variant={badgeVariant} className='flex items-center gap-1'>
             {Icon && <Icon className='size-3' />}
             {statusDef?.label ?? statusValue}
@@ -240,7 +258,9 @@ export const tasksColumns: ColumnDef<Task>[] = [
     // write the original upload path to records.source_file_path.
     id: 'source',
     header: () => <span className='text-xs text-muted-foreground'>Source</span>,
-    meta: { title: 'Source' },
+    // w-px with nowrap content makes the cell hug its button instead of
+    // absorbing whatever slack the other columns leave behind.
+    meta: { title: 'Source', className: 'w-px' },
     cell: ({ row }) => {
       const path = row.original.source_file_path
       if (!path) return null
@@ -262,6 +282,9 @@ export const tasksColumns: ColumnDef<Task>[] = [
 
   {
     id: 'actions',
+    // The menu button is the narrowest cell on the row, so it hugs too -
+    // otherwise it takes a share of the width and crowds the Source button.
+    meta: { className: 'w-px' },
     cell: ({ row }) => <DataTableRowActions row={row} />,
   },
 ]
