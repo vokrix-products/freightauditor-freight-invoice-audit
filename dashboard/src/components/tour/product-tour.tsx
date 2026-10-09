@@ -10,6 +10,7 @@ import {
   useState,
 } from 'react'
 import { ChevronLeft, ChevronRight, Compass, X } from 'lucide-react'
+import { SHOW_TASKS_NAV, TASKS_NAV_LABEL } from '@/product-config'
 import { BorderBeam } from '@/components/magicui/border-beam'
 import { PulsatingButton } from '@/components/magicui/pulsating-button'
 import { Button } from '@/components/ui/button'
@@ -37,47 +38,115 @@ const GAP = 12 // gap between the highlight and the card
 // Kept in step with the poller: a rate agreement is only useful once it has
 // been processed into a record, which is what later invoices are priced
 // against. Uploading an invoice first leaves it unaudited.
+// A target that exists but is not rendered - the sidebar on a narrow screen, or
+// a card this account's data does not produce - cannot be pointed at, so those
+// steps are passed over rather than shown against an empty rectangle.
+function isVisible(element: Element | null): element is Element {
+  if (!element) return false
+  const rect = element.getBoundingClientRect()
+  return rect.width > 0 && rect.height > 0
+}
+
+const NAV_SHORT = SHOW_TASKS_NAV ? TASKS_NAV_LABEL : 'the records page'
+const NAV_LINE = SHOW_TASKS_NAV
+  ? `Dashboard is this page. ${TASKS_NAV_LABEL} is every document you have uploaded, with its status and the notes behind any finding. `
+  : `Dashboard is this page. `
+
 export const PRODUCT_TOUR_STEPS: TourStep[] = [
   {
     target: "[data-tour='welcome']",
-    title: 'This is your dashboard',
-    body: 'Five numbers at the top, then the documents behind them. This walkthrough points at each part. You can leave at any step and start it again from the button in this corner.',
+    title: 'Where your audits land',
+    body: "Everything the audit produces for your account appears on this page. The five numbers across the top are the summary; the cards underneath are the detail behind them.\n\nNothing is audited until a file is uploaded, so a new account starts empty. This walkthrough takes about a minute - Esc leaves it at any point, and the button up here replays it.",
+    placement: 'bottom',
+  },
+  {
+    target: "[data-tour='sidebar']",
+    title: 'Moving between pages',
+    body: `${NAV_LINE}The links at the bottom of this column go to Support, the Audit Log and Help, and the next three steps explain each. On a narrow window this column is hidden; the button at the top left brings it back.`,
+    placement: 'right',
+  },
+  {
+    target: "[data-tour='sidebar-support']",
+    title: 'Support',
+    body: 'Raise a ticket with us: something broken, a question about your account, or a document the audit read wrongly. A person answers it, so use this when a figure looks wrong and you want it checked rather than guessed at.',
+    placement: 'right',
+  },
+  {
+    target: "[data-tour='sidebar-audit']",
+    title: 'Audit Log',
+    body: 'The dated history of your account: sign-ins, uploads, and which documents were processed, each with its time. Use it to confirm when something arrived, or to show what happened on a given day.',
+    placement: 'right',
+  },
+  {
+    target: "[data-tour='sidebar-help']",
+    title: 'Help',
+    body: 'The written guide: what each check does, how a contract rate is applied to a lane, and what every status means. Worth reading once before you act on a figure.',
+    placement: 'right',
+  },
+  {
+    target: "[data-tour='search']",
+    title: 'Search',
+    body: 'Opens a panel for moving to another page without the sidebar. Cmd+K, or Ctrl+K on Windows, opens it from anywhere.',
+    placement: 'bottom',
+  },
+  {
+    target: "[data-tour='notifications']",
+    title: 'Notifications',
+    body: 'Alerts raised for your account. The badge counts the ones you have not read, and the list refreshes itself every 30 seconds so nothing has to be reloaded.',
+    placement: 'bottom',
+  },
+  {
+    target: "[data-tour='theme']",
+    title: 'Appearance',
+    body: 'Light, dark, or follow your system setting. Pick whichever you can read a dense table in.',
+    placement: 'bottom',
+  },
+  {
+    target: "[data-tour='account']",
+    title: 'Your account',
+    body: 'Profile, Billing and Settings all open the same settings page, which is where your plan and its upload limit live. Sign out is at the bottom.',
     placement: 'bottom',
   },
   {
     target: "[data-tour='upload']",
     title: 'Upload a rate agreement first',
-    body: "Drop a PDF, Excel, CSV or plain-text file here. An invoice is only audited against rates that are already on file, so upload the carrier's agreement before its invoices. Scanned PDFs without a text layer will not extract — there is no OCR.",
+    body: "Both documents go in this one box: the carrier's rate agreement, and the invoices to check against it. The agreement has to be on file first, because an invoice is only priced against rates already there. One uploaded before its agreement gets the missing-field, arithmetic and duplicate checks only, and is not re-audited afterwards.\n\nOne agreement covers that carrier's future invoices. Text-layer PDF, Excel, CSV or plain text; a scanned page has no text layer to read, and there is no OCR.",
     placement: 'bottom',
   },
   {
     target: "[data-tour='stats']",
-    title: 'What the audit found',
-    body: 'Invoices processed, what is flagged for a human, the money billed above contracted rate, agreements gone stale, and the total charges reviewed. Money is counted once per invoice, so re-uploading a file does not inflate it.',
+    title: 'The five numbers',
+    body: "Freight Invoice Audits - every invoice file processed, so a re-upload counts again.\nFlagged for Review - the records the audit says a person should look at.\nOvercharges Found - money billed above the contracted rate, and how many invoices it was found on.\nRate Agreements Expired - agreements past their expiry date, counted once per agreement however many lanes it covers.\nCharges Reviewed - the invoice totals added up, counted once per invoice so a re-upload cannot inflate it.",
     placement: 'bottom',
   },
   {
     target: "[data-tour='breakdown']",
     title: 'Every record, by status',
-    body: 'valid:good, flagged:critical, missing:critical, expired:warning, contract-review:warning, unmapped:warning. Rate agreements are counted once per agreement rather than once per lane.',
+    body: "One bar per status that actually occurs among the documents on this page.\n\nValid - the required fields are present and every check passed.\nFlagged - a duplicate, an overcharge, a variance, or a total that does not reconcile.\nMissing - a required field was not found on the document.\nExpired - a rate agreement past its expiry date.\nContract-Review - needs a person: the lane could not be priced against the contract.\nUnmapped - the document type could not be determined.\n\nA rate agreement is counted once per agreement here, not once per lane.",
     placement: 'bottom',
   },
   {
     target: "[data-tour='activity']",
-    title: 'What arrived most recently',
-    body: 'The last records written, newest first. Open one to read its notes — that is where an overcharge is explained in plain English, with the figures it was calculated from.',
+    title: 'Recent Activity',
+    body: `The last records written, newest first, with the carrier and the date. The quickest way to confirm that an upload you just made was processed. Every document, with its notes, is under ${NAV_SHORT}.`,
     placement: 'top',
   },
   {
     target: "[data-tour='agreements']",
-    title: 'The contracts behind the audit',
-    body: 'Every rate agreement on file, the lanes each covers, and its expiry. An invoice whose lane matches nothing here is left untouched rather than guessed at.',
+    title: 'Rate Agreements on File',
+    body: "Every rate agreement the audit has on file: the carrier, how many lanes it covers, and its expiry date. An invoice whose lane matches nothing here is left untouched rather than priced from a rate the contract does not promise.\n\nCheck this after uploading an agreement. If it is not listed, it was not read as one, and its invoices will not be audited against it.",
+    placement: 'top',
+  },
+  {
+    target: "[data-testid='assistant-button']",
+    title: 'The assistant',
+    body: "A chat about the product itself: how the audit works, what a status means, what to try next. It cannot see your uploaded files or your records, so for anything about your own data use Support. A session allows up to 20 messages; refreshing starts a new one.",
     placement: 'top',
   },
   {
     target: "[data-tour='tour-start']",
-    title: 'Run this again any time',
-    body: 'This button replays the walkthrough. It runs once on its own the first time you open the dashboard.',
+    title: 'Replay this walkthrough',
+    body: 'This button runs the tour again whenever you want it. It plays once on its own the first time you open the dashboard.',
     placement: 'bottom',
   },
 ]
@@ -121,7 +190,7 @@ export function ProductTourProvider({
   const findFrom = useCallback(
     (from: number) => {
       for (let i = from; i < steps.length; i += 1) {
-        if (document.querySelector(steps[i].target)) return i
+        if (isVisible(document.querySelector(steps[i].target))) return i
       }
       return -1
     },
@@ -131,7 +200,7 @@ export function ProductTourProvider({
   const findBack = useCallback(
     (from: number) => {
       for (let i = from; i >= 0; i -= 1) {
-        if (document.querySelector(steps[i].target)) return i
+        if (isVisible(document.querySelector(steps[i].target))) return i
       }
       return -1
     },
@@ -372,7 +441,7 @@ export function ProductTourProvider({
                   <X className='size-4' />
                 </button>
               </div>
-              <p className='mt-2 text-sm text-muted-foreground'>{step.body}</p>
+              <p className='mt-2 whitespace-pre-line text-sm text-muted-foreground'>{step.body}</p>
               <div className='mt-4 flex items-center justify-between'>
                 <Button variant='ghost' size='sm' onClick={finish}>
                   Skip
