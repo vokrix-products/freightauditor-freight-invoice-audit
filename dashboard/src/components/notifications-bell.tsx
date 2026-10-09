@@ -78,7 +78,7 @@ export function NotificationsBell() {
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button variant='ghost' size='icon' className='relative'>
+        <Button variant='ghost' size='icon' className='relative' data-tour='notifications'>
           <Bell className='h-5 w-5' />
           {unread > 0 && (
             <span className='absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground'>

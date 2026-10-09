@@ -25,7 +25,7 @@ export function ProfileDropdown() {
     <>
       <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
-          <Button variant='ghost' className='relative h-8 w-8 rounded-full'>
+          <Button variant='ghost' className='relative h-8 w-8 rounded-full' data-tour='account'>
             <Avatar className='h-8 w-8'>
               <AvatarImage src='' alt={email} />
               <AvatarFallback>{initials}</AvatarFallback>

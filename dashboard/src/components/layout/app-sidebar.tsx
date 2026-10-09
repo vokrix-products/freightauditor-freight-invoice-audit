@@ -20,7 +20,7 @@ export function AppSidebar() {
   const { collapsible, variant } = useLayout()
   const authUser = useAuthStore((state) => state.auth.user)
   return (
-    <Sidebar collapsible={collapsible} variant={variant}>
+    <Sidebar collapsible={collapsible} variant={variant} data-tour='sidebar'>
       <SidebarHeader>
         <AppTitle />
       </SidebarHeader>
@@ -33,7 +33,7 @@ export function AppSidebar() {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton asChild>
-              <a href="/tickets/">
+              <a href="/tickets/" data-tour='sidebar-support'>
                 <LifeBuoy className="h-4 w-4" />
                 <span>Support</span>
               </a>
@@ -41,7 +41,7 @@ export function AppSidebar() {
           </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton asChild>
-              <a href="/audit/">
+              <a href="/audit/" data-tour='sidebar-audit'>
                 <ClipboardList className="h-4 w-4" />
                 <span>Audit Log</span>
               </a>
@@ -49,7 +49,7 @@ export function AppSidebar() {
           </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton asChild>
-              <a href="/help/">
+              <a href="/help/" data-tour='sidebar-help'>
                 <BookOpen className="h-4 w-4" />
                 <span>Help</span>
               </a>
