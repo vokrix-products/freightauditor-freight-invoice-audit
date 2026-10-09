@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import {
   Card,
   CardContent,
@@ -112,6 +113,11 @@ export function Dashboard() {
           </div>
           {PRODUCT_ARCHETYPE === 'report' && <ReportCard />}
           <div data-tour='stats' className='grid gap-4 sm:grid-cols-2 lg:grid-cols-5'>
+            <Link
+              to='/tasks'
+              search={{ document_type: ['Invoice'] }}
+              className='block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+            >
             <Card>
               <CardHeader className='flex flex-row items-center justify-between space-y-0 pb-2'>
                 <CardTitle className='text-sm font-medium'>{RECORDS_LABEL}</CardTitle>
@@ -132,6 +138,12 @@ export function Dashboard() {
                 )}
               </CardContent>
             </Card>
+            </Link>
+            <Link
+              to='/tasks'
+              search={{ status: ['flagged:critical', 'missing:critical'] }}
+              className='block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+            >
             <Card>
               <CardHeader className='flex flex-row items-center justify-between space-y-0 pb-2'>
                 <CardTitle className='text-sm font-medium'>Flagged for Review</CardTitle>
@@ -151,6 +163,12 @@ export function Dashboard() {
                 )}
               </CardContent>
             </Card>
+            </Link>
+            <Link
+              to='/tasks'
+              search={{ status: ['flagged:critical'] }}
+              className='block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+            >
             <Card>
               <CardHeader className='flex flex-row items-center justify-between space-y-0 pb-2'>
                 <CardTitle className='text-sm font-medium'>Overcharges Found</CardTitle>
@@ -172,6 +190,12 @@ export function Dashboard() {
                 )}
               </CardContent>
             </Card>
+            </Link>
+            <Link
+              to='/tasks'
+              search={{ status: ['expired:warning'] }}
+              className='block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+            >
             <Card>
               <CardHeader className='flex flex-row items-center justify-between space-y-0 pb-2'>
                 <CardTitle className='text-sm font-medium'>Rate Agreements Expired</CardTitle>
@@ -191,6 +215,12 @@ export function Dashboard() {
                 )}
               </CardContent>
             </Card>
+            </Link>
+            <Link
+              to='/tasks'
+              search={{ document_type: ['Invoice'] }}
+              className='block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+            >
             <Card>
               <CardHeader className='flex flex-row items-center justify-between space-y-0 pb-2'>
                 <CardTitle className='text-sm font-medium'>Charges Reviewed</CardTitle>
@@ -212,6 +242,7 @@ export function Dashboard() {
                 )}
               </CardContent>
             </Card>
+            </Link>
           </div>
           <div className='grid grid-cols-1 gap-4 lg:grid-cols-7'>
             <Card data-tour='breakdown' className='col-span-1 lg:col-span-4'>
