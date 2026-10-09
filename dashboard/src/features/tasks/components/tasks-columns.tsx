@@ -64,12 +64,10 @@ export function laneLabel(row: Task): string {
 // CSV export writes its header row from there. The React header above it is a
 // render function, which an export cannot read.
 //
-// meta.className is applied to both the header cell and the body cells, which
-// is deliberate: max-w-0 has to reach the td for a truncating child to have
-// something to clip against. Widths are fractions rather than a running total
-// that adds up past 100% - when the fractions over-commit, the browser has to
-// steal the difference from whichever columns are left, which is what pushes
-// one column's content into its neighbour.
+// Widths are fractions rather than a running total that adds up past 100% -
+// when the fractions over-commit, the browser has to steal the difference from
+// whichever columns are left, which is what pushes one column's content into
+// its neighbour.
 export const tasksColumns: ColumnDef<Task>[] = [
   {
     id: 'select',
@@ -160,18 +158,21 @@ export const tasksColumns: ColumnDef<Task>[] = [
     header: ({ column }) => (
       <DataTableColumnHeader column={column} title='Lane' />
     ),
-    meta: { title: 'Lane', className: 'ps-1 max-w-0 w-1/5', tdClassName: 'ps-4' },
+    meta: { title: 'Lane', className: 'ps-1 w-1/5', tdClassName: 'ps-4' },
     cell: ({ row }) => {
       const label = String(row.getValue('lane') ?? '')
       if (!label) {
         return <span className='text-muted-foreground'>{'\u2014'}</span>
       }
-      // Same structure as the Name column, and for the same reason: without
-      // the block-level wrapper the span stays inline and truncate does
-      // nothing, so a long lane name runs over the Status badge beside it.
+      // Wraps rather than truncates. A lane is the field the audit matches an
+      // invoice against, so half of one does not identify the row - and the six
+      // rate-agreement rows differ only by this column.
+      // whitespace-normal is not optional: the table primitive sets
+      // whitespace-nowrap on every cell, the span inherits it, and the text
+      // would run past the cell rather than wrapping inside it.
       return (
         <div className='flex flex-col gap-0.5'>
-          <span className='truncate text-xs text-muted-foreground' title={label}>
+          <span className='block break-words whitespace-normal text-xs text-muted-foreground'>
             {label}
           </span>
         </div>
