@@ -82,6 +82,14 @@ export function laneLabel(row: Task): string {
 // when the fractions over-commit, the browser has to steal the difference from
 // whichever columns are left, which is what pushes one column's content into
 // its neighbour.
+// The lanes of one rate agreement share a file, so the list showed six
+// identical rows. This is what draws them together as one expandable row.
+// Every other row gets a key of its own, so invoices are never grouped.
+export function groupKeyFor(row: Task): string {
+  if (row.details?.document_type !== 'rate_sheet') return `row:${row.id}`
+  return `rate_sheet:${String(row.title ?? '')}::${String(row.source_file_path ?? '')}`
+}
+
 export const tasksColumns: ColumnDef<Task>[] = [
   {
     id: 'select',
@@ -165,6 +173,15 @@ export const tasksColumns: ColumnDef<Task>[] = [
     },
     filterFn: (row, id, value) =>
       (value as string[]).includes(String(row.getValue(id))),
+  },
+  {
+    id: 'groupKey',
+    accessorFn: (row) => groupKeyFor(row),
+    enableGrouping: true,
+    enableSorting: false,
+    header: () => null,
+    cell: () => null,
+    meta: { className: 'hidden' },
   },
   {
     id: 'lane',
