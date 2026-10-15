@@ -202,67 +202,78 @@ export function TasksTable({ data }: DataTableProps) {
           </TableHeader>
           <TableBody>
             {table.getRowModel().rows?.length ? (
-              table.getRowModel().rows.map((row) => (
-                <TableRow
-                  key={row.id}
-                  data-state={row.getIsSelected() && 'selected'}
-                  className={cn('cursor-pointer', row.getIsGrouped() && 'bg-muted/40')}
-                  onClick={(event) => {
-                    // Only a click on the row itself opens the panel. The
-                    // checkbox, the source-file button and the actions menu
-                    // keep their own behaviour.
-                    if (
-                      (event.target as HTMLElement).closest(
-                        'button, a, input, [role="checkbox"], [role="menuitem"]'
-                      )
-                    ) {
-                      return
-                    }
-                    // A group row is a rate agreement, not a record, so it
-                    // has nothing of its own to show. It opens instead.
-                    if (row.getIsGrouped()) {
-                      row.toggleExpanded()
-                      return
-                    }
-                    setCurrentRow(row.original)
-                    setOpen('view')
-                  }}
-                >
-                  {row.getIsGrouped() ? (
-                    <TableCell colSpan={row.getVisibleCells().length}>
-                      <div className='flex items-center gap-2 text-sm'>
-                        {row.getIsExpanded() ? (
-                          <ChevronDown className='size-4 shrink-0' />
-                        ) : (
-                          <ChevronRight className='size-4 shrink-0' />
-                        )}
-                        <span className='font-medium'>
-                          {row.subRows[0]?.original.title ?? 'Rate agreement'}
-                        </span>
-                        <span className='text-muted-foreground'>
-                          {row.subRows.length} lane
-                          {row.subRows.length === 1 ? '' : 's'}
-                        </span>
-                      </div>
-                    </TableCell>
-                  ) : (
-                    row.getVisibleCells().map((cell) => (
-                      <TableCell
-                        key={cell.id}
-                        className={cn(
-                          cell.column.columnDef.meta?.className,
-                          cell.column.columnDef.meta?.tdClassName
-                        )}
-                      >
-                        {flexRender(
-                          cell.column.columnDef.cell,
-                          cell.getContext()
-                        )}
+              table.getRowModel().rows.map((row) => {
+                // Every row is a group, because the grouping key column is
+                // always on. Most groups hold a single row - an invoice, or a
+                // rate agreement covering one lane - and drawing a header for
+                // those labelled an invoice "1 lane" and hid its columns. Only
+                // a group of two or more rows is one expandable row.
+                const isGroupHeader = row.getIsGrouped() && row.subRows.length > 1
+                const displayRow = isGroupHeader ? row : (row.subRows[0] ?? row)
+                return (
+                  <TableRow
+                    key={row.id}
+                    data-state={displayRow.getIsSelected() && 'selected'}
+                    className={cn(
+                      'cursor-pointer',
+                      isGroupHeader && 'bg-muted/40'
+                    )}
+                    onClick={(event) => {
+                      // Only a click on the row itself opens the panel. The
+                      // checkbox, the source-file button and the actions menu
+                      // keep their own behaviour.
+                      if (
+                        (event.target as HTMLElement).closest(
+                          'button, a, input, [role="checkbox"], [role="menuitem"]'
+                        )
+                      ) {
+                        return
+                      }
+                      // A group row is a rate agreement, not a record, so it
+                      // has nothing of its own to show. It opens instead.
+                      if (isGroupHeader) {
+                        row.toggleExpanded()
+                        return
+                      }
+                      setCurrentRow(displayRow.original)
+                      setOpen('view')
+                    }}
+                  >
+                    {isGroupHeader ? (
+                      <TableCell colSpan={row.getVisibleCells().length}>
+                        <div className='flex items-center gap-2 text-sm'>
+                          {row.getIsExpanded() ? (
+                            <ChevronDown className='size-4 shrink-0' />
+                          ) : (
+                            <ChevronRight className='size-4 shrink-0' />
+                          )}
+                          <span className='font-medium'>
+                            {row.subRows[0]?.original.title ?? 'Rate agreement'}
+                          </span>
+                          <span className='text-muted-foreground'>
+                            {row.subRows.length} lanes
+                          </span>
+                        </div>
                       </TableCell>
-                    ))
-                  )}
-                </TableRow>
-              ))
+                    ) : (
+                      displayRow.getVisibleCells().map((cell) => (
+                        <TableCell
+                          key={cell.id}
+                          className={cn(
+                            cell.column.columnDef.meta?.className,
+                            cell.column.columnDef.meta?.tdClassName
+                          )}
+                        >
+                          {flexRender(
+                            cell.column.columnDef.cell,
+                            cell.getContext()
+                          )}
+                        </TableCell>
+                      ))
+                    )}
+                  </TableRow>
+                )
+              })
             ) : (
               <TableRow>
                 <TableCell
