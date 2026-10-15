@@ -35,6 +35,8 @@ const OVERDUE_IS_A_FINDING = new Set([
   'flagged:critical',
   'missing:critical',
   'expired:warning',
+  'contract-review:warning',
+  'unmapped:warning',
 ])
 
 const OVERDUE_MARKER = /\s*\(overdue\)/
