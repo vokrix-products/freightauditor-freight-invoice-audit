@@ -91,12 +91,29 @@ export function TasksTable({ data }: DataTableProps) {
     onRowSelectionChange: setRowSelection,
     onSortingChange: setSorting,
     onColumnVisibilityChange: setColumnVisibility,
+    // The placeholder promises carrier, invoice, BOL or PO, but only title was
+    // ever read and id is a hidden uuid, so searching an invoice number found
+    // nothing. The values live in records.title and in details, which the
+    // schema types loosely and the database has been known to store as a bare
+    // string rather than an object.
     globalFilterFn: (row, _columnId, filterValue) => {
-      const id = String(row.getValue('id')).toLowerCase()
-      const title = String(row.getValue('title')).toLowerCase()
-      const searchValue = String(filterValue).toLowerCase()
+      const searchValue = String(filterValue).toLowerCase().trim()
+      if (!searchValue) return true
 
-      return id.includes(searchValue) || title.includes(searchValue)
+      const task = row.original
+      const details = (
+        task.details && typeof task.details === 'object' ? task.details : {}
+      ) as Record<string, unknown>
+
+      return [
+        task.title,
+        task.source_file_path,
+        details.invoice_number,
+        details.bill_of_lading_pro_number,
+      ].some(
+        (value) =>
+          typeof value === 'string' && value.toLowerCase().includes(searchValue)
+      )
     },
     getCoreRowModel: getCoreRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
