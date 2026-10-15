@@ -8,11 +8,14 @@ import {
   getCoreRowModel,
   getFacetedRowModel,
   getFacetedUniqueValues,
+  getExpandedRowModel,
   getFilteredRowModel,
+  getGroupedRowModel,
   getPaginationRowModel,
   getSortedRowModel,
   useReactTable,
 } from '@tanstack/react-table'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useTableUrlState } from '@/hooks/use-table-url-state'
 import {
@@ -40,7 +43,10 @@ export function TasksTable({ data }: DataTableProps) {
   // Local UI-only states
   const [rowSelection, setRowSelection] = useState({})
   const [sorting, setSorting] = useState<SortingState>([])
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({ id: false })
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({
+    id: false,
+    groupKey: false,
+  })
   const { setOpen, setCurrentRow } = useTasks()
 
   // Local state management for table (uncomment to use local-only state, not synced with URL)
@@ -81,6 +87,7 @@ export function TasksTable({ data }: DataTableProps) {
       pagination,
     },
     enableRowSelection: true,
+    initialState: { grouping: ['groupKey'] },
     onRowSelectionChange: setRowSelection,
     onSortingChange: setSorting,
     onColumnVisibilityChange: setColumnVisibility,
@@ -93,6 +100,8 @@ export function TasksTable({ data }: DataTableProps) {
     },
     getCoreRowModel: getCoreRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
+    getGroupedRowModel: getGroupedRowModel(),
+    getExpandedRowModel: getExpandedRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFacetedRowModel: getFacetedRowModel(),
@@ -180,7 +189,7 @@ export function TasksTable({ data }: DataTableProps) {
                 <TableRow
                   key={row.id}
                   data-state={row.getIsSelected() && 'selected'}
-                  className='cursor-pointer'
+                  className={cn('cursor-pointer', row.getIsGrouped() && 'bg-muted/40')}
                   onClick={(event) => {
                     // Only a click on the row itself opens the panel. The
                     // checkbox, the source-file button and the actions menu
@@ -192,24 +201,49 @@ export function TasksTable({ data }: DataTableProps) {
                     ) {
                       return
                     }
+                    // A group row is a rate agreement, not a record, so it
+                    // has nothing of its own to show. It opens instead.
+                    if (row.getIsGrouped()) {
+                      row.toggleExpanded()
+                      return
+                    }
                     setCurrentRow(row.original)
                     setOpen('view')
                   }}
                 >
-                  {row.getVisibleCells().map((cell) => (
-                    <TableCell
-                      key={cell.id}
-                      className={cn(
-                        cell.column.columnDef.meta?.className,
-                        cell.column.columnDef.meta?.tdClassName
-                      )}
-                    >
-                      {flexRender(
-                        cell.column.columnDef.cell,
-                        cell.getContext()
-                      )}
+                  {row.getIsGrouped() ? (
+                    <TableCell colSpan={row.getVisibleCells().length}>
+                      <div className='flex items-center gap-2 text-sm'>
+                        {row.getIsExpanded() ? (
+                          <ChevronDown className='size-4 shrink-0' />
+                        ) : (
+                          <ChevronRight className='size-4 shrink-0' />
+                        )}
+                        <span className='font-medium'>
+                          {row.subRows[0]?.original.title ?? 'Rate agreement'}
+                        </span>
+                        <span className='text-muted-foreground'>
+                          {row.subRows.length} lane
+                          {row.subRows.length === 1 ? '' : 's'}
+                        </span>
+                      </div>
                     </TableCell>
-                  ))}
+                  ) : (
+                    row.getVisibleCells().map((cell) => (
+                      <TableCell
+                        key={cell.id}
+                        className={cn(
+                          cell.column.columnDef.meta?.className,
+                          cell.column.columnDef.meta?.tdClassName
+                        )}
+                      >
+                        {flexRender(
+                          cell.column.columnDef.cell,
+                          cell.getContext()
+                        )}
+                      </TableCell>
+                    ))
+                  )}
                 </TableRow>
               ))
             ) : (
