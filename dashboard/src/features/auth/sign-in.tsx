@@ -222,7 +222,7 @@ export function SignIn() {
               type='text'
               value={company}
               onChange={(e) => setCompany(e.target.value)}
-              placeholder='Shipper or brokerage name'
+              placeholder='Your company name'
             />
           </div>
           {error && <p className='text-sm text-destructive'>{error}</p>}
