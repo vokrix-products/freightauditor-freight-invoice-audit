@@ -2,15 +2,14 @@ import { FILTER_PLACEHOLDER } from '@/product-config'
 import { useEffect, useMemo, useState } from 'react'
 import { getRouteApi } from '@tanstack/react-router'
 import {
+  type Row,
   type SortingState,
   type VisibilityState,
   flexRender,
   getCoreRowModel,
   getFacetedRowModel,
   getFacetedUniqueValues,
-  getExpandedRowModel,
   getFilteredRowModel,
-  getGroupedRowModel,
   getPaginationRowModel,
   getSortedRowModel,
   useReactTable,
@@ -30,7 +29,11 @@ import { DataTablePagination, DataTableToolbar } from '@/components/data-table'
 import { statuses } from '../data/data'
 import { type Task } from '../data/schema'
 import { DataTableBulkActions } from './data-table-bulk-actions'
-import { documentTypeLabel, tasksColumns as columns } from './tasks-columns'
+import {
+  documentTypeLabel,
+  groupKeyFor,
+  tasksColumns as columns,
+} from './tasks-columns'
 import { useTasks } from './tasks-provider'
 
 const route = getRouteApi('/_authenticated/tasks/')
@@ -38,6 +41,25 @@ const route = getRouteApi('/_authenticated/tasks/')
 type DataTableProps = {
   data: Task[]
 }
+
+// A rate agreement covering several lanes collapses to one row, and that
+// collapse happens here rather than in the table's row model.
+//
+// Grouping inside the model put sorting, selection and paging upstream of the
+// leaves, which broke all three: sorting compared group rows that carry no leaf
+// values, so clicking Name did nothing at all; select-all set selection on
+// group rows, which getFilteredSelectedRowModel never returns, so the delete
+// dialog read "Delete 0 tasks"; and the page counter measured groups instead of
+// records, so 17 records read as 12.
+type DisplayItem =
+  | {
+      type: 'group'
+      key: string
+      label: string
+      count: number
+      expanded: boolean
+    }
+  | { type: 'row'; row: Row<Task> }
 
 export function TasksTable({ data }: DataTableProps) {
   // Local UI-only states
@@ -47,12 +69,12 @@ export function TasksTable({ data }: DataTableProps) {
     id: false,
     groupKey: false,
   })
+  // Which collapsed groups the reader has opened. Keyed by the group key, so it
+  // survives a re-sort or a filter change without resetting.
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(
+    {}
+  )
   const { setOpen, setCurrentRow } = useTasks()
-
-  // Local state management for table (uncomment to use local-only state, not synced with URL)
-  // const [globalFilter, onGlobalFilterChange] = useState('')
-  // const [columnFilters, onColumnFiltersChange] = useState<ColumnFiltersState>([])
-  // const [pagination, onPaginationChange] = useState<PaginationState>({ pageIndex: 0, pageSize: 10 })
 
   // Synced with URL states (updated to match route search schema defaults)
   const {
@@ -87,7 +109,6 @@ export function TasksTable({ data }: DataTableProps) {
       pagination,
     },
     enableRowSelection: true,
-    initialState: { grouping: ['groupKey'] },
     onRowSelectionChange: setRowSelection,
     onSortingChange: setSorting,
     onColumnVisibilityChange: setColumnVisibility,
@@ -117,8 +138,6 @@ export function TasksTable({ data }: DataTableProps) {
     },
     getCoreRowModel: getCoreRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
-    getGroupedRowModel: getGroupedRowModel(),
-    getExpandedRowModel: getExpandedRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFacetedRowModel: getFacetedRowModel(),
@@ -145,6 +164,51 @@ export function TasksTable({ data }: DataTableProps) {
   useEffect(() => {
     ensurePageInRange(pageCount)
   }, [pageCount, ensurePageInRange])
+
+  const toggleGroup = (key: string) => {
+    setExpandedGroups((prev) => ({ ...prev, [key]: prev[key] !== true }))
+  }
+
+  // Lane counts are taken per page, not across the whole result set, because
+  // that is what is on screen. A set of lanes split across a page boundary
+  // arrives as a count of one on each page and is drawn as ordinary rows,
+  // rather than leaving a header claiming lanes that are not in view.
+  const pageRows = table.getRowModel().rows
+  const laneCounts = new Map<string, number>()
+  for (const row of pageRows) {
+    const key = groupKeyFor(row.original)
+    laneCounts.set(key, (laneCounts.get(key) ?? 0) + 1)
+  }
+
+  const displayRows: DisplayItem[] = []
+  const groupsAlreadyDrawn = new Set<string>()
+  for (const row of pageRows) {
+    const key = groupKeyFor(row.original)
+    const count = laneCounts.get(key) ?? 1
+
+    if (count <= 1) {
+      // An invoice, or a rate agreement covering a single lane. There is
+      // nothing to collapse, so it draws as the record it is.
+      displayRows.push({ type: 'row', row })
+      continue
+    }
+
+    const expanded = expandedGroups[key] === true
+    if (!groupsAlreadyDrawn.has(key)) {
+      groupsAlreadyDrawn.add(key)
+      displayRows.push({
+        type: 'group',
+        key,
+        label: String(row.original.title ?? 'Rate agreement'),
+        count,
+        expanded,
+      })
+    }
+    // The header stands in for its lanes while it is closed.
+    if (expanded) displayRows.push({ type: 'row', row })
+  }
+
+  const columnCount = table.getVisibleLeafColumns().length
 
   return (
     <div
@@ -201,23 +265,38 @@ export function TasksTable({ data }: DataTableProps) {
             ))}
           </TableHeader>
           <TableBody>
-            {table.getRowModel().rows?.length ? (
-              table.getRowModel().rows.map((row) => {
-                // Every row is a group, because the grouping key column is
-                // always on. Most groups hold a single row - an invoice, or a
-                // rate agreement covering one lane - and drawing a header for
-                // those labelled an invoice "1 lane" and hid its columns. Only
-                // a group of two or more rows is one expandable row.
-                const isGroupHeader = row.getIsGrouped() && row.subRows.length > 1
-                const displayRow = isGroupHeader ? row : (row.subRows[0] ?? row)
+            {displayRows.length ? (
+              displayRows.map((item) => {
+                if (item.type === 'group') {
+                  return (
+                    <TableRow
+                      key={`group-${item.key}`}
+                      className='cursor-pointer bg-muted/40'
+                      onClick={() => toggleGroup(item.key)}
+                    >
+                      <TableCell colSpan={columnCount}>
+                        <div className='flex items-center gap-2 text-sm'>
+                          {item.expanded ? (
+                            <ChevronDown className='size-4 shrink-0' />
+                          ) : (
+                            <ChevronRight className='size-4 shrink-0' />
+                          )}
+                          <span className='font-medium'>{item.label}</span>
+                          <span className='text-muted-foreground'>
+                            {item.count} lanes
+                          </span>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )
+                }
+
+                const row = item.row
                 return (
                   <TableRow
                     key={row.id}
-                    data-state={displayRow.getIsSelected() && 'selected'}
-                    className={cn(
-                      'cursor-pointer',
-                      isGroupHeader && 'bg-muted/40'
-                    )}
+                    data-state={row.getIsSelected() && 'selected'}
+                    className='cursor-pointer'
                     onClick={(event) => {
                       // Only a click on the row itself opens the panel. The
                       // checkbox, the source-file button and the actions menu
@@ -229,48 +308,24 @@ export function TasksTable({ data }: DataTableProps) {
                       ) {
                         return
                       }
-                      // A group row is a rate agreement, not a record, so it
-                      // has nothing of its own to show. It opens instead.
-                      if (isGroupHeader) {
-                        row.toggleExpanded()
-                        return
-                      }
-                      setCurrentRow(displayRow.original)
+                      setCurrentRow(row.original)
                       setOpen('view')
                     }}
                   >
-                    {isGroupHeader ? (
-                      <TableCell colSpan={row.getVisibleCells().length}>
-                        <div className='flex items-center gap-2 text-sm'>
-                          {row.getIsExpanded() ? (
-                            <ChevronDown className='size-4 shrink-0' />
-                          ) : (
-                            <ChevronRight className='size-4 shrink-0' />
-                          )}
-                          <span className='font-medium'>
-                            {row.subRows[0]?.original.title ?? 'Rate agreement'}
-                          </span>
-                          <span className='text-muted-foreground'>
-                            {row.subRows.length} lanes
-                          </span>
-                        </div>
+                    {row.getVisibleCells().map((cell) => (
+                      <TableCell
+                        key={cell.id}
+                        className={cn(
+                          cell.column.columnDef.meta?.className,
+                          cell.column.columnDef.meta?.tdClassName
+                        )}
+                      >
+                        {flexRender(
+                          cell.column.columnDef.cell,
+                          cell.getContext()
+                        )}
                       </TableCell>
-                    ) : (
-                      displayRow.getVisibleCells().map((cell) => (
-                        <TableCell
-                          key={cell.id}
-                          className={cn(
-                            cell.column.columnDef.meta?.className,
-                            cell.column.columnDef.meta?.tdClassName
-                          )}
-                        >
-                          {flexRender(
-                            cell.column.columnDef.cell,
-                            cell.getContext()
-                          )}
-                        </TableCell>
-                      ))
-                    )}
+                    ))}
                   </TableRow>
                 )
               })
