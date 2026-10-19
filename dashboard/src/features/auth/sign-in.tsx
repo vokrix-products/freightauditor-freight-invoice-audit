@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label'
 
 export function SignIn() {
   const [email, setEmail] = useState('')
+  const [company, setCompany] = useState('')
   const [code, setCode] = useState('')
   const [step, setStep] = useState<'email' | 'code'>('email')
   const [loading, setLoading] = useState(false)
@@ -42,8 +43,14 @@ export function SignIn() {
       token: code,
       type: 'email',
     })
+    if (verifyError) { setLoading(false); setError('Invalid code. Please try again.'); return }
+    // Stored on the account rather than sent with the OTP: signInWithOtp
+    // applies options.data only when it creates the user, so a returning
+    // customer would be neither asked nor recorded. updateUser covers both.
+    if (company.trim()) {
+      await supabase.auth.updateUser({ data: { company: company.trim() } })
+    }
     setLoading(false)
-    if (verifyError) { setError('Invalid code. Please try again.'); return }
     window.location.href = '/'
   }
 
@@ -207,6 +214,16 @@ export function SignIn() {
           <div className='space-y-2'>
             <Label htmlFor='email'>Email</Label>
             <Input id='email' type='email' value={email} onChange={(e) => setEmail(e.target.value)} required />
+          </div>
+          <div className='space-y-2'>
+            <Label htmlFor='company'>Company</Label>
+            <Input
+              id='company'
+              type='text'
+              value={company}
+              onChange={(e) => setCompany(e.target.value)}
+              placeholder='Shipper or brokerage name'
+            />
           </div>
           {error && <p className='text-sm text-destructive'>{error}</p>}
           <Button type='submit' className='w-full' disabled={loading}>

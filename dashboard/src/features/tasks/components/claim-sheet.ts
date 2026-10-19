@@ -81,6 +81,15 @@ async function resolveContract(
   }
 }
 
+// The party filing the claim. Collected at signup and stored on the account,
+// because the shipper's own legal entity appears on no document the poller
+// reads - only the carrier is named on the invoice.
+async function claimantName(): Promise<string> {
+  const { data } = await supabase.auth.getUser()
+  const company = data.user?.user_metadata?.company
+  return typeof company === 'string' ? company.trim() : ''
+}
+
 export async function openClaimSheet(task: Task): Promise<void> {
   const details = asRecord(task.details)
   const notes = noteList(details._notes)
@@ -92,6 +101,7 @@ export async function openClaimSheet(task: Task): Promise<void> {
   if (!win) return
 
   const contractInfo = await resolveContract(text(details.matched_rate_line_reference))
+  const claimant = await claimantName()
 
   const identity: Array<[string, string]> = [
     ['Carrier', text(task.title)],
@@ -156,6 +166,9 @@ export async function openClaimSheet(task: Task): Promise<void> {
 <div class="sheet">
   <h1>Freight invoice overbilling claim</h1>
   <p class="sub">Billed charges compared against the contracted rate agreement on file.</p>
+
+  <h2>Claimant</h2>
+  <table><tbody>${row(['Account', claimant || 'Not provided'])}</tbody></table>
 
   <h2>Invoice</h2>
   <table><tbody>${identity.map(row).join('')}</tbody></table>
