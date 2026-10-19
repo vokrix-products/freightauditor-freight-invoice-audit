@@ -210,9 +210,13 @@ export function SignIn() {
           </div>
           {error && <p className='text-sm text-destructive'>{error}</p>}
           <Button type='submit' className='w-full' disabled={loading}>
-            {loading ? 'Sending code...' : 'Start free trial'}
+            {loading ? 'Sending code...' : 'Continue with email'}
           </Button>
         </form>
+        <p className='text-center text-xs text-muted-foreground'>
+          We&apos;ll email you a 6-digit code. There is no password, so
+          returning customers use the same form.
+        </p>
       </div>
     </div>
   )
