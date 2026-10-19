@@ -1,4 +1,5 @@
 import { formatCurrency, noteList, toNumber } from '@/lib/format'
+import { supabase } from '@/lib/supabase'
 import { type Task } from '../data/schema'
 
 // A printable claim for one invoice. Every figure is read from what the audit
@@ -59,10 +60,38 @@ function laneText(details: Record<string, unknown>): string {
   return origin || destination
 }
 
-export function openClaimSheet(task: Task): void {
+// The rate line an invoice was priced from names the agreement it came from,
+// but the poller stores that name only on the rate sheet, not the invoice. So
+// the agreement is read back from the sheet that carries it. Returns nothing
+// when the match is absent - the sheet then says so rather than inventing one.
+async function resolveContract(
+  reference: string
+): Promise<{ identifier?: string; basis?: string }> {
+  if (!reference) return {}
+  const { data, error } = await supabase
+    .from('records')
+    .select('details')
+    .eq('details->>contract_rate_sheet_identifier', reference)
+    .limit(1)
+  if (error || !data || data.length === 0) return {}
+  const details = asRecord((data[0] as { details: unknown }).details)
+  return {
+    identifier: text(details.contract_rate_sheet_identifier) || undefined,
+    basis: text(details.rate_basis) || undefined,
+  }
+}
+
+export async function openClaimSheet(task: Task): Promise<void> {
   const details = asRecord(task.details)
   const notes = noteList(details._notes)
   const overcharge = claimableOvercharge(task)
+
+  // The popup must be opened on the click itself, before any await, or the
+  // browser blocks it. A document opened this way can be written to later.
+  const win = window.open('', '_blank')
+  if (!win) return
+
+  const contractInfo = await resolveContract(text(details.matched_rate_line_reference))
 
   const identity: Array<[string, string]> = [
     ['Carrier', text(task.title)],
@@ -70,12 +99,12 @@ export function openClaimSheet(task: Task): void {
     ['BOL / PRO number', text(details.bill_of_lading_pro_number)],
     ['Ship date', text(details.ship_date)],
     ['Lane', laneText(details)],
-    ['Rate basis', text(details.rate_basis)],
+    ['Rate basis', text(details.rate_basis) || contractInfo.basis || ''],
   ]
 
   const contract: Array<[string, string]> = [
     ['Contracted rate line', text(details.matched_rate_line_reference)],
-    ['Rate agreement', text(details.contract_rate_sheet_identifier)],
+    ['Rate agreement', text(details.contract_rate_sheet_identifier) || contractInfo.identifier || ''],
   ]
 
   const charges = CHARGE_ROWS.map(([key, label]) => {
@@ -155,8 +184,6 @@ export function openClaimSheet(task: Task): void {
 </body>
 </html>`
 
-  const win = window.open('', '_blank')
-  if (!win) return
   win.document.write(html)
   win.document.close()
 }
