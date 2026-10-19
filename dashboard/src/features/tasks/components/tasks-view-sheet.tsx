@@ -1,4 +1,4 @@
-import { ExternalLink } from 'lucide-react'
+import { ExternalLink, FileText } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/sheet'
 import { statuses, severityToBadgeVariant } from '../data/data'
 import { type Task } from '../data/schema'
+import { claimableOvercharge, openClaimSheet } from './claim-sheet'
 import { openSourceFile } from './open-source-file'
 import { RecordFindings } from './record-findings'
 
@@ -32,6 +33,10 @@ export function TasksViewSheet({
   const severity = statusDef?.severity ?? 'neutral'
   const sourcePath = currentRow.source_file_path
 
+  // Only offered where there is money to claim. A document with no variance has
+  // nothing to demand back, and a sheet saying so would be noise.
+  const hasClaim = claimableOvercharge(currentRow) !== null
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className='flex flex-col overflow-y-auto'>
@@ -46,6 +51,17 @@ export function TasksViewSheet({
             <Badge variant={severityToBadgeVariant[severity]}>
               {statusDef?.label ?? currentRow.status}
             </Badge>
+            {hasClaim && (
+              <Button
+                variant='default'
+                size='sm'
+                className='h-6 px-2 text-xs'
+                onClick={() => openClaimSheet(currentRow)}
+              >
+                <FileText className='mr-1 size-3' />
+                Claim sheet
+              </Button>
+            )}
             {sourcePath && (
               <Button
                 variant='ghost'
