@@ -10,7 +10,11 @@ import {
 } from '@/components/ui/sheet'
 import { statuses, severityToBadgeVariant } from '../data/data'
 import { type Task } from '../data/schema'
-import { claimableOvercharge, openClaimSheet } from './claim-sheet'
+import {
+  claimableOvercharge,
+  openClaimSheet,
+  openSavedClaim,
+} from './claim-sheet'
 import { openSourceFile } from './open-source-file'
 import { RecordFindings } from './record-findings'
 
@@ -60,6 +64,17 @@ export function TasksViewSheet({
               >
                 <FileText className='mr-1 size-3' />
                 Claim sheet
+              </Button>
+            )}
+            {hasClaim && (
+              <Button
+                variant='ghost'
+                size='sm'
+                className='h-6 px-2 text-xs'
+                onClick={() => void openSavedClaim(currentRow)}
+              >
+                <ExternalLink className='mr-1 size-3' />
+                Saved claim
               </Button>
             )}
             {sourcePath && (
