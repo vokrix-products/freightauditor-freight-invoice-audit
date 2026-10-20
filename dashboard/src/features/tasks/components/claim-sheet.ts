@@ -1,5 +1,6 @@
 import { formatCurrency, noteList, toNumber } from '@/lib/format'
 import { supabase } from '@/lib/supabase'
+import { toast } from 'sonner'
 import { type Task } from '../data/schema'
 
 // A printable claim for one invoice. Every figure is read from what the audit
@@ -84,10 +85,26 @@ async function resolveContract(
 // The party filing the claim. Collected at signup and stored on the account,
 // because the shipper's own legal entity appears on no document the poller
 // reads - only the carrier is named on the invoice.
-async function claimantName(): Promise<string> {
+async function claimantIdentity(): Promise<{ company: string; uid: string }> {
   const { data } = await supabase.auth.getUser()
-  const company = data.user?.user_metadata?.company
-  return typeof company === 'string' ? company.trim() : ''
+  const user = data.user
+  const company = user?.user_metadata?.company
+  return {
+    uid: user?.id ?? '',
+    company: typeof company === 'string' ? company.trim() : '',
+  }
+}
+
+// The saved copy must not fire the print dialog when it is opened later, so
+// every script tag is dropped before upload. The sheet has no other scripts.
+const SCRIPT_TAGS = /<script[\s\S]*?<\/script>/g
+
+// The results bucket policy already scopes folder[1] to auth.uid(), so writing
+// under the customer's own folder needs no new bucket or policy. The filename
+// leads with a fixed-width timestamp, so name-ordered listing is newest first.
+function claimPath(uid: string, taskId: string): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  return `${uid}/claims/${taskId}-${stamp}.html`
 }
 
 export async function openClaimSheet(task: Task): Promise<void> {
@@ -101,7 +118,7 @@ export async function openClaimSheet(task: Task): Promise<void> {
   if (!win) return
 
   const contractInfo = await resolveContract(text(details.matched_rate_line_reference))
-  const claimant = await claimantName()
+  const { company: claimant, uid } = await claimantIdentity()
 
   const identity: Array<[string, string]> = [
     ['Carrier', text(task.title)],
@@ -168,7 +185,7 @@ export async function openClaimSheet(task: Task): Promise<void> {
   <p class="sub">Billed charges compared against the contracted rate agreement on file.</p>
 
   <h2>Claimant</h2>
-  <table><tbody>${row(['Account', claimant || 'Not provided'])}</tbody></table>
+  <table><tbody>${row(['Company', claimant || 'Not provided'])}</tbody></table>
 
   <h2>Invoice</h2>
   <table><tbody>${identity.map(row).join('')}</tbody></table>
@@ -199,4 +216,48 @@ export async function openClaimSheet(task: Task): Promise<void> {
 
   win.document.write(html)
   win.document.close()
+
+  if (!uid) return
+  const stored = html.replace(SCRIPT_TAGS, '')
+  const { error: saveError } = await supabase.storage
+    .from('results')
+    .upload(
+      claimPath(uid, task.id),
+      new Blob([stored], { type: 'text/html' }),
+      { contentType: 'text/html', upsert: false }
+    )
+  toast(
+    saveError
+      ? 'Claim opened, but the saved copy could not be stored.'
+      : 'A copy of this claim was saved to your results folder.'
+  )
+}
+
+// Opens the newest saved claim for a record. The popup is opened on the click,
+// before any await, or the browser blocks it.
+export async function openSavedClaim(task: Task): Promise<void> {
+  const win = window.open('', '_blank')
+  if (!win) return
+  const { uid } = await claimantIdentity()
+  if (!uid) {
+    win.close()
+    return
+  }
+  const { data: files, error } = await supabase.storage
+    .from('results')
+    .list(`${uid}/claims`, { limit: 100, sortBy: { column: 'name', order: 'desc' } })
+  const saved = error ? undefined : files?.find((f) => f.name.startsWith(`${task.id}-`))
+  if (!saved) {
+    win.close()
+    toast('No saved claim for this record yet.')
+    return
+  }
+  const { data: signed } = await supabase.storage
+    .from('results')
+    .createSignedUrl(`${uid}/claims/${saved.name}`, 600)
+  if (!signed?.signedUrl) {
+    win.close()
+    return
+  }
+  win.location.href = signed.signedUrl
 }
