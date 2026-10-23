@@ -4,10 +4,11 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { DataTableColumnHeader } from '@/components/data-table'
-import { firstNote } from '@/lib/format'
+import { firstNote, formatCurrency, toNumber } from '@/lib/format'
 import { statuses, severityToBadgeVariant } from '../data/data'
 import { type Task } from '../data/schema'
 import { DataTableRowActions } from './data-table-row-actions'
+import { glHintsForDetails } from './gl-hints'
 import { openSourceFile } from './open-source-file'
 
 function formatDueDate(iso: string | null | undefined): string | null {
@@ -315,6 +316,60 @@ export const tasksColumns: ColumnDef<Task>[] = [
     enableHiding: true,
   },
 
+  {
+    // The variance the audit priced, taken from details rather than from
+    // expected_freight_charge, which the poller deliberately leaves empty.
+    // Without a column the only way to see what an invoice cost was to open it,
+    // and a CSV carried no money at all.
+    id: 'overcharge',
+    accessorFn: (row) => toNumber(row.details?.overcharge_amount),
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title='Overcharge' />
+    ),
+    meta: { title: 'Overcharge', className: 'ps-1 w-px', tdClassName: 'ps-4' },
+    cell: ({ row }) => {
+      const value = row.getValue('overcharge')
+      const amount = typeof value === 'number' ? value : null
+      if (amount === null || amount <= 0) {
+        return <span className='text-muted-foreground'>{'\u2014'}</span>
+      }
+      return (
+        <span className='font-medium text-destructive'>
+          {formatCurrency(amount)}
+        </span>
+      )
+    },
+    enableSorting: true,
+    enableHiding: true,
+  },
+  {
+    // The accounts this invoice's own charge lines point at, so an export can
+    // be keyed without opening each record. Names, not codes - the mapping is
+    // one edit in gl-hints once a customer's chart of accounts is known.
+    id: 'suggested_gl',
+    accessorFn: (row) => glHintsForDetails(row.details).join('; '),
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title='Suggested GL' />
+    ),
+    meta: {
+      title: 'Suggested GL',
+      className: 'ps-1 w-px',
+      tdClassName: 'ps-4',
+    },
+    cell: ({ row }) => {
+      const label = String(row.getValue('suggested_gl') ?? '')
+      if (!label) {
+        return <span className='text-muted-foreground'>{'\u2014'}</span>
+      }
+      return (
+        <span className='break-words whitespace-normal text-xs text-muted-foreground'>
+          {label}
+        </span>
+      )
+    },
+    enableSorting: false,
+    enableHiding: true,
+  },
   {
     id: 'actions',
     // The menu button is the narrowest cell on the row, so it hugs too -

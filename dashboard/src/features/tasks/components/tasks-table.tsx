@@ -29,6 +29,7 @@ import { DataTablePagination, DataTableToolbar } from '@/components/data-table'
 import { statuses } from '../data/data'
 import { type Task } from '../data/schema'
 import { DataTableBulkActions } from './data-table-bulk-actions'
+import { RecoverySummary } from './recovery-summary'
 import {
   documentTypeLabel,
   groupKeyFor,
@@ -217,6 +218,7 @@ export function TasksTable({ data }: DataTableProps) {
         'flex flex-1 flex-col gap-4'
       )}
     >
+      <RecoverySummary data={data} />
       <DataTableToolbar
         table={table}
         searchPlaceholder={FILTER_PLACEHOLDER}
