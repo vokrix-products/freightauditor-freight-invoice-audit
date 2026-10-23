@@ -2,6 +2,7 @@ import { formatCurrency, noteList, toNumber } from '@/lib/format'
 import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
 import { type Task } from '../data/schema'
+import { glAccountFor } from './gl-hints'
 
 // A printable claim for one invoice. Every figure is read from what the audit
 // already recorded - nothing is recalculated here, so the sheet cannot assert a
@@ -108,7 +109,7 @@ type ClaimSheet = {
   claimant: string
   invoiceNumber: string
   identity: Array<[string, string]>
-  charges: Array<[string, string]>
+  charges: Array<[string, string, string]>
   contract: Array<[string, string]>
   notes: string[]
   variance: string | null
@@ -253,6 +254,77 @@ async function renderClaimPdf(sheet: ClaimSheet): Promise<Uint8Array> {
     }
   }
 
+  // Charge, amount, and the account it usually lands in. Three columns rather
+  // than a sentence, because the reader is going to key this into a ledger. The
+  // account names come from gl-hints and are printed as suggestions, never as
+  // codes - a chart of accounts is per-company and this sheet is not the place
+  // to invent one.
+  const chargeRows = (entries: Array<[string, string, string]>) => {
+    const colLabel = MARGIN
+    const colAmount = MARGIN + CONTENT_W * 0.46
+    const colAccount = MARGIN + CONTENT_W * 0.66
+    const labelWidth = CONTENT_W * 0.44
+    const accountWidth = CONTENT_W * 0.34
+
+    ensure(28)
+    page.drawText('CHARGE', {
+      x: colLabel,
+      y: y - 7,
+      size: 7,
+      font: bold,
+      color: rgb(...GREY),
+    })
+    page.drawText('BILLED', {
+      x: colAmount,
+      y: y - 7,
+      size: 7,
+      font: bold,
+      color: rgb(...GREY),
+    })
+    page.drawText('SUGGESTED ACCOUNT', {
+      x: colAccount,
+      y: y - 7,
+      size: 7,
+      font: bold,
+      color: rgb(...GREY),
+    })
+    y -= 12
+
+    for (const [label, amount, account] of entries) {
+      const labelLines = wrap(label, 9.5, labelWidth)
+      const accountLines = account ? wrap(account, 8.5, accountWidth) : []
+      const count = Math.max(labelLines.length, accountLines.length, 1)
+      ensure(count * 13 + 4)
+      const top = y
+      labelLines.forEach((line, i) => {
+        page.drawText(line, {
+          x: colLabel,
+          y: top - 9.5 - i * 13,
+          size: 9.5,
+          font,
+          color: rgb(...INK),
+        })
+      })
+      page.drawText(safe(amount), {
+        x: colAmount,
+        y: top - 9.5,
+        size: 9.5,
+        font: bold,
+        color: rgb(...INK),
+      })
+      accountLines.forEach((line, i) => {
+        page.drawText(line, {
+          x: colAccount,
+          y: top - 9.5 - i * 13,
+          size: 8.5,
+          font,
+          color: rgb(...GREY),
+        })
+      })
+      y = top - count * 13 - 2
+    }
+  }
+
   // Pitch
   page.drawText('Freight invoice overbilling claim', {
     x: MARGIN,
@@ -280,7 +352,18 @@ async function renderClaimPdf(sheet: ClaimSheet): Promise<Uint8Array> {
 
   section('Billed charges')
   if (sheet.charges.length) {
-    rows(sheet.charges)
+    chargeRows(sheet.charges)
+    // Says out loud what the column is and is not, so nobody posts to it blind.
+    ensure(26)
+    y -= 4
+    for (const line of wrap(
+      'Account names are a starting point for your own chart of accounts, not a posting instruction.',
+      8,
+      CONTENT_W
+    )) {
+      page.drawText(line, { x: MARGIN, y: y - 8, size: 8, font, color: rgb(...GREY) })
+      y -= 11
+    }
   } else {
     const lines = wrap(
       'No charge breakdown was extracted from this document.',
@@ -429,8 +512,10 @@ export async function openClaimSheet(task: Task): Promise<void> {
     ],
     charges: CHARGE_ROWS.map(([key, label]) => {
       const formatted = formatCurrency(details[key])
-      return formatted ? ([label, formatted] as [string, string]) : null
-    }).filter((row): row is [string, string] => row !== null),
+      return formatted
+        ? ([label, formatted, glAccountFor(key)] as [string, string, string])
+        : null
+    }).filter((row): row is [string, string, string] => row !== null),
     contract: [
       ['Contracted rate line', text(details.matched_rate_line_reference)],
       [
