@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { PRODUCT_ARCHETYPE } from '@/product-config'
+import { supabase } from '@/lib/supabase'
 import { Badge } from '@/components/ui/badge'
 import {
   Tooltip,
@@ -47,16 +48,32 @@ async function openCheckout() {
     toast.error('Billing is not configured. VITE_STRIPE_PRICE_ID is empty.')
     return
   }
-  const res = await fetch(`${BILLING_WEBHOOK_URL}/create-checkout-session`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      price_id: PRICE_ID,
-      product_id: PRODUCT_ID_VALUE,
-      success_url: window.location.origin + '?upgraded=true',
-      cancel_url: window.location.href,
-    }),
-  })
+  // The billing service credits the account that started the checkout. Without
+  // this token it has only the address typed on Stripe's page, so paying with a
+  // second address created a second account and left the original paywalled.
+  // Anonymous callers still work; the service falls back to the email path.
+  const { data: auth } = await supabase.auth.getSession()
+  const token = auth.session?.access_token
+  let res: Response
+  try {
+    res = await fetch(`${BILLING_WEBHOOK_URL}/create-checkout-session`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        price_id: PRICE_ID,
+        product_id: PRODUCT_ID_VALUE,
+        success_url: window.location.origin + '?upgraded=true',
+        cancel_url: window.location.href,
+      }),
+    })
+  } catch {
+    // A network failure rejected the promise, so the button did nothing at all.
+    toast.error('Could not reach billing. Check your connection and try again.')
+    return
+  }
   const data = (await res.json().catch(() => ({}))) as {
     checkout_url?: string
     error?: string
