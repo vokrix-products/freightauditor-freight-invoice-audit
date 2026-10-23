@@ -50,15 +50,21 @@ export function RecoverySummary({ data }: { data: Task[] }) {
     }
     load()
     window.addEventListener(CLAIM_EVENT_NAME, load)
+    // The event above is same-tab only, so a claim set in another tab was
+    // invisible here until a full reload.
+    window.addEventListener('focus', load)
     return () => {
       alive = false
       window.removeEventListener(CLAIM_EVENT_NAME, load)
+      window.removeEventListener('focus', load)
     }
   }, [])
 
   if (!data.length) return null
 
   let flagged = 0
+  let flaggedNoMoney = 0
+  let compared = 0
   let priced = 0
   let total = 0
   const perCarrier = new Map<string, number>()
@@ -66,9 +72,24 @@ export function RecoverySummary({ data }: { data: Task[] }) {
 
   for (const task of data) {
     onScreen.add(String(task.id))
-    if (String(task.status ?? '').startsWith('flagged')) flagged += 1
-    const amount = toNumber(detailsRecord(task.details).overcharge_amount)
-    if (amount === null || amount <= 0) continue
+    const details = detailsRecord(task.details)
+    const amount = toNumber(details.overcharge_amount)
+    const isFlagged = String(task.status ?? '').startsWith('flagged')
+    if (isFlagged) flagged += 1
+
+    // A rate line is only recorded when the audit found the contracted lane, so
+    // this counts the records a contract could actually be checked against.
+    // The remainder were never compared to anything: they are unaudited, not
+    // clean, and rendering both the same way made 23 unexamined invoices look
+    // like a clean bill of health.
+    if (String(details.matched_rate_line_reference ?? '').trim()) compared += 1
+
+    if (amount === null || amount <= 0) {
+      // A flag with no money behind it is a data problem - a missing field, a
+      // repeated upload - and reading it as a recovery overstates the finding.
+      if (isFlagged) flaggedNoMoney += 1
+      continue
+    }
     priced += 1
     total += amount
     const carrier = String(task.title ?? '').trim() || 'Carrier not named'
@@ -101,6 +122,17 @@ export function RecoverySummary({ data }: { data: Task[] }) {
         <span className='text-muted-foreground'>
           {data.length} record{data.length === 1 ? '' : 's'} loaded
         </span>
+        <span>
+          <span className='font-medium'>
+            {compared} of {data.length}
+          </span>{' '}
+          <span className='text-muted-foreground'>compared to a contract</span>
+        </span>
+        {data.length - compared > 0 && (
+          <span className='font-medium text-amber-600'>
+            {data.length - compared} with no rate line matched
+          </span>
+        )}
         <span>
           <span className='font-medium'>{flagged}</span>{' '}
           <span className='text-muted-foreground'>flagged</span>
@@ -161,6 +193,12 @@ export function RecoverySummary({ data }: { data: Task[] }) {
       <p className='mt-1 text-xs text-muted-foreground'>
         Totalled from the findings the audit recorded on the records loaded
         here. Carrier figures name up to three carriers by amount.
+        {data.length - compared > 0
+          ? ` ${data.length - compared} of these had no rate line matched, so no contract was applied to them - they are unaudited rather than clean. Upload the rate agreement for those lanes to include them.`
+          : ''}
+        {flaggedNoMoney > 0
+          ? ` ${flaggedNoMoney} flag${flaggedNoMoney === 1 ? '' : 's'} carry no money and are data issues, not recoveries.`
+          : ''}
         {hasClaims
           ? ' Claim states are read from the audit log and cover the same records.'
           : ''}
