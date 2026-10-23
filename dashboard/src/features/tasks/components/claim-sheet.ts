@@ -101,19 +101,44 @@ function claimPath(uid: string, taskId: string): string {
   return `${uid}/claims/${taskId}-${stamp}.pdf`
 }
 
-// The invoice the record was extracted from, read back from the uploads bucket.
-// Only a PDF can be appended to another PDF, so anything else returns null and
-// the claim says the original is not attached rather than guessing.
-async function sourceInvoiceBytes(
+// The document the record was extracted from, read back from the uploads
+// bucket. A PDF is appended page for page. A text or CSV upload cannot be
+// appended to a PDF, so its contents are reproduced verbatim instead - the
+// point is to show the carrier what was submitted, and quietly omitting 32 of
+// 39 records reads as though no document existed for them.
+type SourceDoc =
+  | { kind: 'pdf'; bytes: Uint8Array }
+  | { kind: 'text'; body: string }
+
+const TEXT_SUFFIXES = ['.txt', '.csv', '.tsv']
+// A very large upload must not turn one claim into a hundred pages.
+const TEXT_LIMIT = 40_000
+
+async function loadSourceDocument(
   path: string | null | undefined
-): Promise<Uint8Array | null> {
+): Promise<SourceDoc | null> {
   const value = text(path)
   if (!value) return null
   const name = (value.split('/').pop() ?? '').toLowerCase()
-  if (!name.endsWith('.pdf')) return null
+  const isPdf = name.endsWith('.pdf')
+  if (!isPdf && !TEXT_SUFFIXES.some((suffix) => name.endsWith(suffix))) return null
   const { data, error } = await supabase.storage.from('uploads').download(value)
   if (error || !data) return null
-  return new Uint8Array(await data.arrayBuffer())
+  if (isPdf) return { kind: 'pdf', bytes: new Uint8Array(await data.arrayBuffer()) }
+  return { kind: 'text', body: (await data.text()).slice(0, TEXT_LIMIT) }
+}
+
+// The page count is needed for the footer before the document is complete, so
+// a PDF is parsed twice: once to count, once to copy. Load errors and copy
+// errors differ, which is why the count is not reused as a success flag.
+async function pdfPageCount(bytes: Uint8Array): Promise<number | null> {
+  const { PDFDocument } = await import('pdf-lib')
+  try {
+    const doc = await PDFDocument.load(bytes, { ignoreEncryption: true })
+    return doc.getPageCount()
+  } catch {
+    return null
+  }
 }
 
 function fileName(task: Task, invoiceNumber: string): string {
@@ -151,9 +176,35 @@ const GREY = [0.35, 0.35, 0.35] as const
 const INK = [0.07, 0.07, 0.07] as const
 const RED = [0.72, 0.11, 0.11] as const
 
+const TEXT_SIZE = 7.5
+const TEXT_LEADING = 9.5
+const TEXT_PER_LINE = Math.floor(CONTENT_W / (TEXT_SIZE * 0.6))
+const TEXT_PER_PAGE = Math.floor((PAGE_H - MARGIN * 2 - 34) / TEXT_LEADING)
+
+function textEvidenceLines(body: string): string[] {
+  const out: string[] = []
+  for (const raw of safe(body).replace(/\r\n/g, '\n').split('\n')) {
+    if (!raw.trim()) {
+      out.push('')
+      continue
+    }
+    let rest = raw
+    while (rest.length > TEXT_PER_LINE) {
+      out.push(rest.slice(0, TEXT_PER_LINE))
+      rest = rest.slice(TEXT_PER_LINE)
+    }
+    out.push(rest)
+  }
+  return out
+}
+
+function textEvidencePageCount(body: string): number {
+  return Math.max(1, Math.ceil(textEvidenceLines(body).length / TEXT_PER_PAGE))
+}
+
 async function renderClaimPdf(
   sheet: ClaimSheet,
-  sourceBytes: Uint8Array | null
+  source: SourceDoc | null
 ): Promise<Uint8Array> {
   // Imported here rather than at the top of the file so the module is only
   // fetched when somebody actually asks for a claim, not on first paint.
@@ -166,25 +217,12 @@ async function renderClaimPdf(
   let page = doc.addPage([PAGE_W, PAGE_H])
   let y = PAGE_H - MARGIN
 
-  // The carrier's own invoice is appended as evidence. A claim that names a
-  // variance without showing the document it came from invites the carrier to
-  // ask for it, which is the manual work this product exists to remove. The
-  // claim page is created first, so the appended pages follow it.
-  const sourceAttempted = sourceBytes !== null
+  const sourceAttempted = source !== null
   let attachedPages = 0
-  if (sourceBytes) {
-    try {
-      const original = await PDFDocument.load(sourceBytes, {
-        ignoreEncryption: true,
-      })
-      const copied = await doc.copyPages(original, original.getPageIndices())
-      copied.forEach((p) => doc.addPage(p))
-      attachedPages = copied.length
-    } catch {
-      // A corrupt or password-protected scan is not a reason to withhold the
-      // claim itself, so the sheet is still produced and says so.
-      attachedPages = 0
-    }
+  if (source?.kind === 'pdf') {
+    attachedPages = (await pdfPageCount(source.bytes)) ?? 0
+  } else if (source?.kind === 'text') {
+    attachedPages = textEvidencePageCount(source.body)
   }
 
   const ensure = (space: number) => {
@@ -508,9 +546,11 @@ async function renderClaimPdf(
   y -= 14
   const evidence =
     attachedPages > 0
-      ? ` The original invoice is appended (${attachedPages} page${attachedPages === 1 ? '' : 's'}).`
+      ? source?.kind === 'pdf'
+        ? ` The original invoice is appended (${attachedPages} page${attachedPages === 1 ? '' : 's'}).`
+        : ` The original document is reproduced in full (${attachedPages} page${attachedPages === 1 ? '' : 's'}).`
       : sourceAttempted
-        ? ' The original invoice could not be attached.'
+        ? ' The original document could not be attached.'
         : ''
   const footer = wrap(
     `Prepared ${sheet.generated} from the invoice and rate agreement on file. ` +
@@ -522,6 +562,39 @@ async function renderClaimPdf(
   for (const line of footer) {
     page.drawText(line, { x: MARGIN, y: y - 8, size: 8, font, color: rgb(...GREY) })
     y -= 11
+  }
+
+  if (source?.kind === 'pdf' && attachedPages > 0) {
+    try {
+      const original = await PDFDocument.load(source.bytes, { ignoreEncryption: true })
+      const copied = await doc.copyPages(original, original.getPageIndices())
+      copied.forEach((page) => doc.addPage(page))
+    } catch {}
+  } else if (source?.kind === 'text' && attachedPages > 0) {
+    const mono = await doc.embedFont(StandardFonts.Courier)
+    const lines = textEvidenceLines(source.body)
+    let index = 0
+    let firstPage = true
+    while (index < lines.length) {
+      const evidencePage = doc.addPage([PAGE_W, PAGE_H])
+      let ty = PAGE_H - MARGIN
+      if (firstPage) {
+        evidencePage.drawText('ORIGINAL DOCUMENT (TEXT AS UPLOADED)', {
+          x: MARGIN, y: ty - 8, size: 8.5, font: bold, color: rgb(...GREY),
+        })
+        ty -= 22
+        firstPage = false
+      }
+      const slice = lines.slice(index, index + TEXT_PER_PAGE)
+      slice.forEach((line, i) => {
+        if (!line) return
+        evidencePage.drawText(line, {
+          x: MARGIN, y: ty - TEXT_SIZE - i * TEXT_LEADING,
+          size: TEXT_SIZE, font: mono, color: rgb(...INK),
+        })
+      })
+      index += slice.length
+    }
   }
 
   doc.setTitle(
@@ -579,8 +652,8 @@ export async function openClaimSheet(task: Task): Promise<void> {
     }),
   }
 
-  const sourceBytes = await sourceInvoiceBytes(task.source_file_path)
-  const bytes = await renderClaimPdf(sheet, sourceBytes)
+  const source = await loadSourceDocument(task.source_file_path)
+  const bytes = await renderClaimPdf(sheet, source)
   const blob = new Blob([new Uint8Array(bytes)], { type: 'application/pdf' })
   const url = URL.createObjectURL(blob)
   const name = fileName(task, sheet.invoiceNumber)
