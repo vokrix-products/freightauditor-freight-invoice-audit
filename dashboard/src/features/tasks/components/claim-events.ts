@@ -20,6 +20,27 @@ export const CLAIM_STATES: Array<{ value: ClaimState; label: string }> = [
   { value: 'denied', label: 'Denied' },
 ]
 
+// The order the summary prints them in. 'generated' leads because it is the
+// only state every claim passes through.
+export const CLAIM_STATE_ORDER: ClaimState[] = [
+  'generated',
+  'filed',
+  'credited',
+  'denied',
+]
+
+export const CLAIM_STATE_LABELS: Record<ClaimState, string> = {
+  generated: 'generated',
+  filed: 'filed',
+  credited: 'credited',
+  denied: 'denied',
+}
+
+// The rollup is rendered far from the buttons that change it, so a write
+// announces itself rather than leaving the summary showing a stale count until
+// the next page load.
+export const CLAIM_EVENT_NAME = 'claim-events-changed'
+
 export type ClaimEvent = {
   recordId: string
   state: ClaimState
@@ -43,6 +64,7 @@ export async function logClaimEvent(
     entity_id: recordId,
     metadata: amount !== null ? { amount } : null,
   })
+  if (!error) window.dispatchEvent(new Event(CLAIM_EVENT_NAME))
   return !error
 }
 
