@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import { PRODUCT_ARCHETYPE } from '@/product-config'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -34,10 +36,17 @@ import {
 import { AnimatedCircularProgressBar } from '@/components/magicui/animated-circular-progress-bar'
 
 const BILLING_WEBHOOK_URL = 'https://web-production-6adc6.up.railway.app'
-const PRICE_ID = (import.meta.env.VITE_STRIPE_PRICE_ID as string) ?? ''
+// A build-time env var arrives as an empty string when it is unset, and `??`
+// does not catch that - the empty price was posted and the billing service
+// answered 400. Trimmed so whitespace fails the same way as absent.
+const PRICE_ID = ((import.meta.env.VITE_STRIPE_PRICE_ID as string) ?? '').trim()
 const PRODUCT_ID_VALUE = import.meta.env.VITE_PRODUCT_ID as string
 
 async function openCheckout() {
+  if (!PRICE_ID) {
+    toast.error('Billing is not configured. VITE_STRIPE_PRICE_ID is empty.')
+    return
+  }
   const res = await fetch(`${BILLING_WEBHOOK_URL}/create-checkout-session`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -48,8 +57,17 @@ async function openCheckout() {
       cancel_url: window.location.href,
     }),
   })
-  const data = await res.json()
-  if (data.checkout_url) window.location.href = data.checkout_url
+  const data = (await res.json().catch(() => ({}))) as {
+    checkout_url?: string
+    error?: string
+  }
+  // Only checkout_url was read, so a 400 rendered as a button that did nothing
+  // and the reason stayed invisible outside the network tab.
+  if (!res.ok || !data.checkout_url) {
+    toast.error(data.error || `Checkout failed (${res.status})`)
+    return
+  }
+  window.location.href = data.checkout_url
 }
 
 function PaywallModal({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -198,6 +216,32 @@ export function JobsCard() {
       window.removeEventListener('drop', onDrop)
     }
   }, [])
+
+  // Payment returns to /?upgraded=true. Nothing read that, so a buyer landed
+  // with no confirmation and - because the subscription query holds its value
+  // for a minute - often still saw the paywall they had just paid to remove.
+  const queryClient = useQueryClient()
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('upgraded') !== 'true') return
+    toast.success('Payment received. Your subscription is being activated.')
+    params.delete('upgraded')
+    const qs = params.toString()
+    window.history.replaceState(
+      {},
+      '',
+      window.location.pathname + (qs ? `?${qs}` : '')
+    )
+    // The webhook may not have written the subscription row yet, so poll a few
+    // times rather than assuming the first refetch sees it.
+    const timers = [1500, 4000, 8000].map((ms) =>
+      window.setTimeout(
+        () => void queryClient.invalidateQueries({ queryKey: ['subscription'] }),
+        ms
+      )
+    )
+    return () => timers.forEach((t) => window.clearTimeout(t))
+  }, [queryClient])
 
   function handleFiles(files: File[]) {
     dragCounter.current = 0
