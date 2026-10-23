@@ -3,6 +3,7 @@ import { supabase } from '@/lib/supabase'
 import { toast } from 'sonner'
 import { type Task } from '../data/schema'
 import { glAccountFor } from './gl-hints'
+import { logClaimEvent } from './claim-events'
 
 // A printable claim for one invoice. Every figure is read from what the audit
 // already recorded - nothing is recalculated here, so the sheet cannot assert a
@@ -100,6 +101,21 @@ function claimPath(uid: string, taskId: string): string {
   return `${uid}/claims/${taskId}-${stamp}.pdf`
 }
 
+// The invoice the record was extracted from, read back from the uploads bucket.
+// Only a PDF can be appended to another PDF, so anything else returns null and
+// the claim says the original is not attached rather than guessing.
+async function sourceInvoiceBytes(
+  path: string | null | undefined
+): Promise<Uint8Array | null> {
+  const value = text(path)
+  if (!value) return null
+  const name = (value.split('/').pop() ?? '').toLowerCase()
+  if (!name.endsWith('.pdf')) return null
+  const { data, error } = await supabase.storage.from('uploads').download(value)
+  if (error || !data) return null
+  return new Uint8Array(await data.arrayBuffer())
+}
+
 function fileName(task: Task, invoiceNumber: string): string {
   const stem = (invoiceNumber || task.id).replace(/[^A-Za-z0-9._-]+/g, '-')
   return `${stem}-claim.pdf`
@@ -135,7 +151,10 @@ const GREY = [0.35, 0.35, 0.35] as const
 const INK = [0.07, 0.07, 0.07] as const
 const RED = [0.72, 0.11, 0.11] as const
 
-async function renderClaimPdf(sheet: ClaimSheet): Promise<Uint8Array> {
+async function renderClaimPdf(
+  sheet: ClaimSheet,
+  sourceBytes: Uint8Array | null
+): Promise<Uint8Array> {
   // Imported here rather than at the top of the file so the module is only
   // fetched when somebody actually asks for a claim, not on first paint.
   const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib')
@@ -146,6 +165,27 @@ async function renderClaimPdf(sheet: ClaimSheet): Promise<Uint8Array> {
 
   let page = doc.addPage([PAGE_W, PAGE_H])
   let y = PAGE_H - MARGIN
+
+  // The carrier's own invoice is appended as evidence. A claim that names a
+  // variance without showing the document it came from invites the carrier to
+  // ask for it, which is the manual work this product exists to remove. The
+  // claim page is created first, so the appended pages follow it.
+  const sourceAttempted = sourceBytes !== null
+  let attachedPages = 0
+  if (sourceBytes) {
+    try {
+      const original = await PDFDocument.load(sourceBytes, {
+        ignoreEncryption: true,
+      })
+      const copied = await doc.copyPages(original, original.getPageIndices())
+      copied.forEach((p) => doc.addPage(p))
+      attachedPages = copied.length
+    } catch {
+      // A corrupt or password-protected scan is not a reason to withhold the
+      // claim itself, so the sheet is still produced and says so.
+      attachedPages = 0
+    }
+  }
 
   const ensure = (space: number) => {
     if (y - space < MARGIN + 30) {
@@ -466,9 +506,16 @@ async function renderClaimPdf(sheet: ClaimSheet): Promise<Uint8Array> {
     color: rgb(0.85, 0.85, 0.85),
   })
   y -= 14
+  const evidence =
+    attachedPages > 0
+      ? ` The original invoice is appended (${attachedPages} page${attachedPages === 1 ? '' : 's'}).`
+      : sourceAttempted
+        ? ' The original invoice could not be attached.'
+        : ''
   const footer = wrap(
     `Prepared ${sheet.generated} from the invoice and rate agreement on file. ` +
-      'Figures are reproduced from the audit as recorded; no charge has been recalculated.',
+      'Figures are reproduced from the audit as recorded; no charge has been recalculated.' +
+      evidence,
     8,
     CONTENT_W
   )
@@ -532,7 +579,8 @@ export async function openClaimSheet(task: Task): Promise<void> {
     }),
   }
 
-  const bytes = await renderClaimPdf(sheet)
+  const sourceBytes = await sourceInvoiceBytes(task.source_file_path)
+  const bytes = await renderClaimPdf(sheet, sourceBytes)
   const blob = new Blob([new Uint8Array(bytes)], { type: 'application/pdf' })
   const url = URL.createObjectURL(blob)
   const name = fileName(task, sheet.invoiceNumber)
@@ -561,6 +609,10 @@ export async function openClaimSheet(task: Task): Promise<void> {
       ? 'Claim created, but the saved copy could not be stored.'
       : 'A copy of this claim was saved to your results folder.'
   )
+
+  // Generating a sheet is itself the first claim event, so the history begins
+  // at the point the claim existed rather than at the point it was filed.
+  void logClaimEvent(task.id, 'generated', overcharge)
 }
 
 // Opens the newest saved claim for a record. The popup is opened on the click,
