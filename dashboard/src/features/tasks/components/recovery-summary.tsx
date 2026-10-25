@@ -27,6 +27,14 @@ function detailsRecord(value: unknown): Record<string, unknown> {
     : {}
 }
 
+// A rate agreement is the yardstick the invoices are measured against, not an
+// invoice that can be overbilled. Counting the two together made a single
+// audited invoice read "1 of 2 compared to a contract" on the screen a buyer
+// sees first, which looks like the audit failed when it had in fact succeeded.
+function isRateAgreement(details: Record<string, unknown>): boolean {
+  return String(details.document_type ?? '').trim() === 'rate_sheet'
+}
+
 // What the records on screen add up to.
 //
 // Every figure comes from the audit's own output - status and overcharge_amount -
@@ -62,6 +70,8 @@ export function RecoverySummary({ data }: { data: Task[] }) {
 
   if (!data.length) return null
 
+  let invoices = 0
+  let agreements = 0
   let flagged = 0
   let flaggedNoMoney = 0
   let compared = 0
@@ -73,15 +83,21 @@ export function RecoverySummary({ data }: { data: Task[] }) {
   for (const task of data) {
     onScreen.add(String(task.id))
     const details = detailsRecord(task.details)
+    if (isRateAgreement(details)) {
+      agreements += 1
+      continue
+    }
+    invoices += 1
+
     const amount = toNumber(details.overcharge_amount)
     const isFlagged = String(task.status ?? '').startsWith('flagged')
     if (isFlagged) flagged += 1
 
     // A rate line is only recorded when the audit found the contracted lane, so
-    // this counts the records a contract could actually be checked against.
+    // this counts the invoices a contract could actually be checked against.
     // The remainder were never compared to anything: they are unaudited, not
-    // clean, and rendering both the same way made 23 unexamined invoices look
-    // like a clean bill of health.
+    // clean, and rendering both the same way made unexamined invoices look like
+    // a clean bill of health.
     if (String(details.matched_rate_line_reference ?? '').trim()) compared += 1
 
     if (amount === null || amount <= 0) {
@@ -115,22 +131,23 @@ export function RecoverySummary({ data }: { data: Task[] }) {
   }
 
   const hasClaims = claimStates.size > 0
+  const unaudited = invoices - compared
 
   return (
     <div className='rounded-md border bg-muted/30 px-4 py-3'>
       <div className='flex flex-wrap items-baseline gap-x-6 gap-y-1 text-sm'>
         <span className='text-muted-foreground'>
-          {data.length} record{data.length === 1 ? '' : 's'} loaded
+          {invoices} invoice{invoices === 1 ? '' : 's'} loaded
         </span>
         <span>
           <span className='font-medium'>
-            {compared} of {data.length}
+            {compared} of {invoices}
           </span>{' '}
           <span className='text-muted-foreground'>compared to a contract</span>
         </span>
-        {data.length - compared > 0 && (
+        {unaudited > 0 && (
           <span className='font-medium text-amber-600'>
-            {data.length - compared} with no rate line matched
+            {unaudited} with no rate line matched
           </span>
         )}
         <span>
@@ -156,6 +173,11 @@ export function RecoverySummary({ data }: { data: Task[] }) {
             {name} {formatCurrency(amount)}
           </span>
         ))}
+        {agreements > 0 && (
+          <span className='text-muted-foreground'>
+            {agreements} rate agreement{agreements === 1 ? '' : 's'} on file
+          </span>
+        )}
       </div>
       {hasClaims && (
         <div className='mt-2 flex flex-wrap items-baseline gap-x-6 gap-y-1 border-t pt-2 text-sm'>
@@ -191,13 +213,16 @@ export function RecoverySummary({ data }: { data: Task[] }) {
         </div>
       )}
       <p className='mt-1 text-xs text-muted-foreground'>
-        Totalled from the findings the audit recorded on the records loaded
+        Totalled from the findings the audit recorded on the invoices loaded
         here. Carrier figures name up to three carriers by amount.
-        {data.length - compared > 0
-          ? ` ${data.length - compared} of these had no rate line matched, so no contract was applied to them - they are unaudited rather than clean. Upload the rate agreement for those lanes to include them.`
+        {unaudited > 0
+          ? ` ${unaudited} of these had no rate line matched, so no contract was applied to them - they are unaudited rather than clean. Upload the rate agreement for those lanes to include them.`
           : ''}
         {flaggedNoMoney > 0
           ? ` ${flaggedNoMoney} flag${flaggedNoMoney === 1 ? '' : 's'} carry no money and are data issues, not recoveries.`
+          : ''}
+        {agreements > 0
+          ? ` The ${agreements} rate agreement${agreements === 1 ? '' : 's'} on file ${agreements === 1 ? 'is' : 'are'} listed below but not counted as invoices.`
           : ''}
         {hasClaims
           ? ' Claim states are read from the audit log and cover the same records.'
