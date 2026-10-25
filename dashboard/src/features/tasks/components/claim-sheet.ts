@@ -125,7 +125,10 @@ async function loadSourceDocument(
   const { data, error } = await supabase.storage.from('uploads').download(value)
   if (error || !data) return null
   if (isPdf) return { kind: 'pdf', bytes: new Uint8Array(await data.arrayBuffer()) }
-  return { kind: 'text', body: (await data.text()).slice(0, TEXT_LIMIT) }
+  const body = (await data.text()).slice(0, TEXT_LIMIT)
+  // An empty upload is not evidence, and reproducing a blank page would suggest
+  // a document was submitted when nothing was.
+  return body.trim() ? { kind: 'text', body } : null
 }
 
 // The page count is needed for the footer before the document is complete, so
@@ -202,10 +205,15 @@ function textEvidencePageCount(body: string): number {
   return Math.max(1, Math.ceil(textEvidenceLines(body).length / TEXT_PER_PAGE))
 }
 
+// `attached` reports what evidence actually reached the file, so the caller can
+// say so when it happens rather than only in the footer of a document the person
+// may save and forward without reading.
+type EvidenceResult = 'pdf' | 'text' | 'failed' | 'none'
+
 async function renderClaimPdf(
   sheet: ClaimSheet,
   source: SourceDoc | null
-): Promise<Uint8Array> {
+): Promise<{ bytes: Uint8Array; attached: EvidenceResult }> {
   // Imported here rather than at the top of the file so the module is only
   // fetched when somebody actually asks for a claim, not on first paint.
   const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib')
@@ -604,7 +612,16 @@ async function renderClaimPdf(
   doc.setProducer('FreightAuditor')
   doc.setCreator('FreightAuditor')
 
-  return doc.save()
+  const attached: EvidenceResult =
+    attachedPages > 0
+      ? source?.kind === 'pdf'
+        ? 'pdf'
+        : 'text'
+      : sourceAttempted
+        ? 'failed'
+        : 'none'
+
+  return { bytes: await doc.save(), attached }
 }
 
 export async function openClaimSheet(task: Task): Promise<void> {
@@ -653,7 +670,21 @@ export async function openClaimSheet(task: Task): Promise<void> {
   }
 
   const source = await loadSourceDocument(task.source_file_path)
-  const bytes = await renderClaimPdf(sheet, source)
+  let rendered: { bytes: Uint8Array; attached: EvidenceResult }
+  try {
+    rendered = await renderClaimPdf(sheet, source)
+  } catch (error) {
+    // The tab was opened on the click, so a failure here used to leave a blank
+    // window and no explanation at all.
+    placeholder?.close()
+    toast.error(
+      `The claim could not be generated: ${
+        error instanceof Error ? error.message : 'unknown error'
+      }`
+    )
+    return
+  }
+  const { bytes, attached } = rendered
   const blob = new Blob([new Uint8Array(bytes)], { type: 'application/pdf' })
   const url = URL.createObjectURL(blob)
   const name = fileName(task, sheet.invoiceNumber)
@@ -682,6 +713,12 @@ export async function openClaimSheet(task: Task): Promise<void> {
       ? 'Claim created, but the saved copy could not be stored.'
       : 'A copy of this claim was saved to your results folder.'
   )
+
+  if (attached === 'failed') {
+    toast(
+      'The claim was created, but the original document could not be attached to it.'
+    )
+  }
 
   // Generating a sheet is itself the first claim event, so the history begins
   // at the point the claim existed rather than at the point it was filed.
