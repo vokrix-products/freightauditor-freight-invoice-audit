@@ -51,6 +51,7 @@ already shipped, or from a limit on the inputs, not from taste.
 """
 
 import re
+from datetime import datetime, timedelta
 
 # Mirrored from processor.py rather than imported: importing processor pulls in
 # pdfplumber and llm_extractor, and this module is pure logic.
@@ -146,6 +147,53 @@ def extract_zone(value):
         if tail and len(tail[0]) == 2 and tail[0].isalpha():
             return tail[0].upper(), parts[-2].lower()
     return None, None
+
+
+def _parse_iso_date(value):
+    """A YYYY-MM-DD date, or None. Anything else is treated as absent."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if len(text) < 10:
+        return None
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _positive_int(value):
+    number = _to_number(value)
+    if number is None or number <= 0:
+        return None
+    return int(round(number))
+
+
+def claim_deadline(invoice_details, rate_line):
+    """The last date a claim for this shipment is accepted, or None.
+
+    The window is the contract's own figure, read off the rate sheet as
+    claim_window_days, and counted from the invoice's ship date. Nothing here is
+    inferred. Payment terms are not claim windows - net 30 says how long the
+    shipper has to pay, not how long the carrier accepts a claim - and a wrong
+    date is worse than no date on a document that goes to a carrier.
+
+    Returns {"claim_window_days", "claim_deadline", "claim_window_source"} or
+    None when either the window or the ship date is missing.
+    """
+    window_days = _positive_int((rate_line or {}).get("claim_window_days"))
+    if window_days is None:
+        return None
+    ship_date = _parse_iso_date((invoice_details or {}).get("ship_date"))
+    if ship_date is None:
+        return None
+    deadline = ship_date + timedelta(days=window_days)
+    return {
+        "claim_window_days": window_days,
+        "claim_deadline": deadline.isoformat(),
+        "claim_window_source": "rate_sheet",
+        "claim_window_text": (rate_line or {}).get("claim_window_text"),
+    }
 
 
 def _lane_match(invoice_details, rate_lines):
@@ -390,6 +438,32 @@ def audit_invoice(invoice_details, rate_lines, diesel_price=None):
         rate_line.get("contract_rate_sheet_identifier") or rate_line.get("title") or ""
     ).strip()
     updates["matched_rate_line_reference"] = reference or None
+
+    # Recorded before any pricing attempt, and independent of it. Whether the
+    # line could be priced has nothing to do with how long the shipper has to
+    # file, and a claim window that vanished because the rated line was
+    # unreadable would hide the one deadline the product claims to protect.
+    window = claim_deadline(invoice_details, rate_line)
+    if window is not None:
+        updates.update(window)
+        stated = str(window.get("claim_window_text") or "").strip()
+        basis = stated or f"{window['claim_window_days']} days from the ship date"
+        note = (
+            f"claim window taken from the rate agreement ({basis}); the ship date is "
+            "used in place of the delivery date"
+        )
+        dispute = _to_number((rate_line or {}).get("dispute_window_days"))
+        if dispute is not None and dispute > 0:
+            note += (
+                " - the same agreement also requires written notice of any dispute "
+                f"within {int(round(dispute))} days of receipt"
+            )
+        notes.append(note)
+    else:
+        notes.append(
+            f"no claim window on the contracted rate agreement {reference or 'on file'}, "
+            "so no filing deadline is shown for this shipment"
+        )
 
     origin = extract_zip(invoice_details.get("origin_location"))
     destination = extract_zip(invoice_details.get("destination_location"))
