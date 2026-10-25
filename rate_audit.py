@@ -192,6 +192,7 @@ def claim_deadline(invoice_details, rate_line):
         "claim_window_days": window_days,
         "claim_deadline": deadline.isoformat(),
         "claim_window_source": "rate_sheet",
+        "claim_window_text": (rate_line or {}).get("claim_window_text"),
     }
 
 
@@ -445,6 +446,19 @@ def audit_invoice(invoice_details, rate_lines, diesel_price=None):
     window = claim_deadline(invoice_details, rate_line)
     if window is not None:
         updates.update(window)
+        stated = str(window.get("claim_window_text") or "").strip()
+        basis = stated or f"{window['claim_window_days']} days from the ship date"
+        note = (
+            f"claim window taken from the rate agreement ({basis}); the ship date is "
+            "used in place of the delivery date"
+        )
+        dispute = _to_number((rate_line or {}).get("dispute_window_days"))
+        if dispute is not None and dispute > 0:
+            note += (
+                " - the same agreement also requires written notice of any dispute "
+                f"within {int(round(dispute))} days of receipt"
+            )
+        notes.append(note)
     else:
         notes.append(
             f"no claim window on the contracted rate agreement {reference or 'on file'}, "

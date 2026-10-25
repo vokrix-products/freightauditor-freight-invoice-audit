@@ -34,6 +34,8 @@ RATE_SHEET_FIELDS = [
     "effective_date",
     "expiration_date",
     "claim_window_days",
+    "claim_window_text",
+    "dispute_window_days",
     "rate_basis",
     "base_rate",
     "minimum_charge",
@@ -79,16 +81,24 @@ SYSTEM_PROMPT = (
     "- A rate sheet with several lanes returns ONE object per lane inside the lanes\n"
     "  array, each with base_rate, minimum_charge, rate_basis,\n"
     "  origin_zone_zip_postal, destination_zone_zip_postal and freight_class_commodity.\n"
-    "  Repeated carrier_name, effective_date, expiration_date and claim_window_days go\n"
-    "  on each object.\n"
+    "  Repeated carrier_name, effective_date, expiration_date, claim_window_days,\n"
+    "  claim_window_text and dispute_window_days go on each object.\n"
     "  Write origin_zone_zip_postal and destination_zone_zip_postal exactly as the\n"
     "  sheet spells them, including a city and state when the sheet names no ZIP.\n"
-    "- claim_window_days is how many days the contract gives the shipper to file a\n"
-    "  claim for a billing error after the shipment moves, as a whole number. Take it\n"
-    "  ONLY from a stated filing or claim period. A payment term is not a claim\n"
-    "  window: net 30, 2/10 net 30 and due dates say how long the shipper has to pay,\n"
-    "  not how long the carrier accepts a claim, so never derive one from the other.\n"
-    "  Omit the key when the document states no filing period.\n"
+    "- claim_window_days is how many days the shipper has to claim an OVERCHARGE\n"
+    "  after the shipment moves. Take it only from a stated claim or filing period.\n"
+    "  A rate agreement may state two different periods and they are not\n"
+    "  interchangeable: a statutory or claim period for loss, damage, delay or\n"
+    "  overcharge, usually under 49 CFR Part 370 or 49 USC 13706, belongs in\n"
+    "  claim_window_days; a contractual dispute or notice period belongs in\n"
+    "  dispute_window_days. When both appear, fill both.\n"
+    "- Convert a stated period to whole days at 30 days per month, so 9 months is\n"
+    "  270. Put the period exactly as the document words it in claim_window_text,\n"
+    "  for example '9 months from delivery' or '180 days from invoice date'.\n"
+    "- A payment term is not a claim window. Net 30, 2/10 net 30 and a due date say\n"
+    "  how long the shipper has to pay, not how long the carrier accepts a claim, so\n"
+    "  never derive a window from one. Omit the keys when the document states no\n"
+    "  filing period.\n"
     "- carrier_name is the carrier or vendor name, never a document type.\n"
     "- Return ONLY valid JSON: an array of objects. No markdown, no prose.\n"
 )

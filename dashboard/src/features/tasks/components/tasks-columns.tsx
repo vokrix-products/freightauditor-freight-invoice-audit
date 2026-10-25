@@ -32,6 +32,27 @@ function formatDueDate(iso: string | null | undefined): string | null {
 // one. On any other row - a Valid one above all - the date is shown on its own
 // in ordinary text, because a red fault beside a passed audit says two
 // opposite things about the same document.
+function parseClaimDeadline(value: unknown): {
+  label: string
+  days: number
+} | null {
+  const iso = typeof value === 'string' ? value.trim() : ''
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null
+  const target = new Date(`${iso}T00:00:00`)
+  if (Number.isNaN(target.getTime())) return null
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const days = Math.round(
+    (target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
+  )
+  const label = target.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  })
+  return { label, days }
+}
+
 const OVERDUE_IS_A_FINDING = new Set([
   'flagged:critical',
   'missing:critical',
@@ -287,6 +308,62 @@ export const tasksColumns: ColumnDef<Task>[] = [
         </div>
       )
     },
+  },
+  {
+    id: 'claim_window',
+    accessorFn: (row) => {
+      const deadline = row.details?.claim_deadline
+      return typeof deadline === 'string' && deadline.trim()
+        ? deadline.trim()
+        : null
+    },
+    header: ({ column }) => (
+      <DataTableColumnHeader column={column} title='Claim window' />
+    ),
+    meta: { title: 'Claim window', className: 'ps-1 w-px', tdClassName: 'ps-4' },
+    cell: ({ row }) => {
+      const parsed = parseClaimDeadline(row.getValue('claim_window'))
+      if (!parsed) {
+        const stated = toNumber(row.original.details?.claim_window_days)
+        if (stated !== null && stated > 0) {
+          return (
+            <div className='flex flex-col gap-0.5'>
+              <span className='text-xs text-muted-foreground'>
+                {stated} days stated
+              </span>
+              <span className='text-xs text-muted-foreground'>Claim period</span>
+            </div>
+          )
+        }
+        return <span className='text-muted-foreground'>{'\u2014'}</span>
+      }
+      const expired = parsed.days < 0
+      const lastDay = parsed.days === 0
+      const soon = !expired && !lastDay && parsed.days <= 14
+      const detail = expired
+        ? 'window closed'
+        : lastDay
+          ? 'last day to file'
+          : `${parsed.days}d left`
+      return (
+        <div className='flex flex-col gap-0.5'>
+          <span
+            className={
+              expired || lastDay || soon
+                ? 'text-destructive font-medium'
+                : 'text-foreground'
+            }
+          >
+            {detail}
+          </span>
+          <span className='text-xs text-muted-foreground'>
+            File by {parsed.label}
+          </span>
+        </div>
+      )
+    },
+    enableSorting: true,
+    enableHiding: false,
   },
   {
     // PRODUCT_CUSTOMIZE: source document link. Keep for any product that
