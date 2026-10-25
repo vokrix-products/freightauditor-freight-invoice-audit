@@ -86,6 +86,65 @@ async function isPaidForProduct(user: PaidCheckUser): Promise<boolean> {
   return hasActiveSubscription(user.id)
 }
 
+// Uploads that count against the free allowance.
+//
+// The gate counts jobs, and a rate agreement is a job, so following the
+// instruction to send both documents spent one of three credits on the
+// yardstick and left two for the invoices. A rate agreement is what the
+// invoices are measured against, not a deliverable in its own right, so it is
+// excluded here. `records` carries no job id, so the upload path - which both
+// tables store - is the only link back to the document type.
+async function getCreditCount(userId: string): Promise<number> {
+  const { data, error } = await supabase
+    .from('jobs')
+    .select('id, input_file_path')
+    .eq('product_id', PRODUCT_ID)
+    .eq('customer_id', userId)
+    .in('status', ['pending', 'processing', 'completed'])
+  if (error) throw error
+
+  const rows = data ?? []
+  const paths = rows
+    .map((row) => row.input_file_path)
+    .filter((path): path is string => typeof path === 'string' && path.length > 0)
+  if (paths.length === 0) return rows.length
+
+  const { data: produced, error: recordError } = await supabase
+    .from('records')
+    .select('source_file_path, details')
+    .eq('product_id', PRODUCT_ID)
+    .eq('customer_id', userId)
+    .in('source_file_path', paths)
+  // Failing open here would hand out free uploads on a network blip, but
+  // failing closed would block a customer who has paid for nothing. Counting
+  // every job is the behaviour that shipped, so that is the fallback.
+  if (recordError) return rows.length
+
+  const agreed = new Set<string>()
+  for (const record of produced ?? []) {
+    const details = record.details as Record<string, unknown> | null
+    if (!details || !record.source_file_path) continue
+    if (String(details.document_type ?? '').trim() === 'rate_sheet') {
+      agreed.add(record.source_file_path)
+    }
+  }
+  return rows.filter(
+    (row) => !row.input_file_path || !agreed.has(row.input_file_path)
+  ).length
+}
+
+function useTrialCredits() {
+  const user = useAuthStore((state) => state.auth.user)
+  return useQuery({
+    queryKey: ['trial-credits', PRODUCT_ID, user?.id],
+    queryFn: () => getCreditCount(user!.id),
+    enabled: !!user,
+    // A job only becomes a rate agreement once the poller has read it, so the
+    // count has to follow the job through processing rather than be read once.
+    refetchInterval: 5000,
+  })
+}
+
 export function useSubscription() {
   const user = useAuthStore((state) => state.auth.user)
   return useQuery({
@@ -99,26 +158,14 @@ export function useSubscription() {
 export function useTrialUsage() {
   const user = useAuthStore((state) => state.auth.user)
   const { data: subIsPaid, isSuccess } = useSubscription()
-  const { data: jobs } = useJobs()
-  const used = jobs?.filter(j => ['pending','processing','completed'].includes(j.status)).length ?? 0
+  const { data: used } = useTrialCredits()
   const metaIsPaid =
     (user as PaidCheckUser | null)?.product_id === PRODUCT_ID ||
     (user as PaidCheckUser | null)?.app_metadata?.product_id === PRODUCT_ID
   // While the subscription query is in flight fall back to the metadata marker,
   // so a paid user is never briefly shown the upgrade prompt.
   const isPaid = isSuccess ? !!subIsPaid || !!metaIsPaid : !!metaIsPaid
-  return { used, limit: TRIAL_LIMIT, isPaid }
-}
-
-async function getRecordCount(userId: string): Promise<number> {
-  const { count, error } = await supabase
-    .from('jobs')
-    .select('*', { count: 'exact', head: true })
-    .eq('product_id', PRODUCT_ID)
-    .eq('customer_id', userId)
-    .in('status', ['pending', 'processing', 'completed'])
-  if (error) throw error
-  return count ?? 0
+  return { used: used ?? 0, limit: TRIAL_LIMIT, isPaid }
 }
 
 export function useUploadJob() {
@@ -138,7 +185,7 @@ export function useUploadJob() {
   async function uploadFile(file: File, jobType = 'process_upload') {
     if (!user) { setError('Not logged in'); return null }
     if (!(await isPaidForProduct(user as PaidCheckUser))) {
-      const count = await getRecordCount(user.id)
+      const count = await getCreditCount(user.id)
       if (count >= TRIAL_LIMIT) { setTrialLimitReached(true); return null }
     }
     setUploading(true)
@@ -153,6 +200,7 @@ export function useUploadJob() {
         .single()
       if (insertError) throw insertError
       queryClient.invalidateQueries({ queryKey: ['jobs', PRODUCT_ID] })
+      queryClient.invalidateQueries({ queryKey: ['trial-credits', PRODUCT_ID] })
       if (user?.id && jobData?.id) void writeAudit('job.created', 'job', String(jobData.id), user.id)
       return jobData
     } catch (err) {
@@ -167,7 +215,7 @@ export function useUploadJob() {
     if (!user) { setError('Not logged in'); return null }
     if (files.length === 0) { setError('No files selected'); return null }
     if (!(await isPaidForProduct(user as PaidCheckUser))) {
-      const count = await getRecordCount(user.id)
+      const count = await getCreditCount(user.id)
       if (count >= TRIAL_LIMIT) { setTrialLimitReached(true); return null }
     }
     setUploading(true)
@@ -188,6 +236,7 @@ export function useUploadJob() {
         .single()
       if (insertError) throw insertError
       queryClient.invalidateQueries({ queryKey: ['jobs', PRODUCT_ID] })
+      queryClient.invalidateQueries({ queryKey: ['trial-credits', PRODUCT_ID] })
       return jobData
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed')
