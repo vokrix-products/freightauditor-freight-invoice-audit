@@ -33,6 +33,7 @@ RATE_SHEET_FIELDS = [
     "contract_rate_sheet_identifier",
     "effective_date",
     "expiration_date",
+    "claim_window_days",
     "rate_basis",
     "base_rate",
     "minimum_charge",
@@ -78,9 +79,16 @@ SYSTEM_PROMPT = (
     "- A rate sheet with several lanes returns ONE object per lane inside the lanes\n"
     "  array, each with base_rate, minimum_charge, rate_basis,\n"
     "  origin_zone_zip_postal, destination_zone_zip_postal and freight_class_commodity.\n"
-    "  Repeated carrier_name, effective_date and expiration_date go on each object.\n"
+    "  Repeated carrier_name, effective_date, expiration_date and claim_window_days go\n"
+    "  on each object.\n"
     "  Write origin_zone_zip_postal and destination_zone_zip_postal exactly as the\n"
     "  sheet spells them, including a city and state when the sheet names no ZIP.\n"
+    "- claim_window_days is how many days the contract gives the shipper to file a\n"
+    "  claim for a billing error after the shipment moves, as a whole number. Take it\n"
+    "  ONLY from a stated filing or claim period. A payment term is not a claim\n"
+    "  window: net 30, 2/10 net 30 and due dates say how long the shipper has to pay,\n"
+    "  not how long the carrier accepts a claim, so never derive one from the other.\n"
+    "  Omit the key when the document states no filing period.\n"
     "- carrier_name is the carrier or vendor name, never a document type.\n"
     "- Return ONLY valid JSON: an array of objects. No markdown, no prose.\n"
 )

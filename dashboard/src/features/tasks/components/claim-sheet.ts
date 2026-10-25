@@ -51,6 +51,42 @@ export function claimableOvercharge(task: Task): number | null {
   return value !== null && value > 0 ? value : null
 }
 
+// The last date the carrier accepts a claim for this shipment, from the
+// contract's own filing window. Only the date is stored; the days remaining are
+// counted here, because a count frozen at generation time would be wrong the
+// next morning on a document somebody opens a week later.
+function claimWindowText(details: Record<string, unknown>): string {
+  const iso = text(details.claim_deadline)
+  const stated = toNumber(details.claim_window_days)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+    const target = new Date(`${iso}T00:00:00`)
+    if (!Number.isNaN(target.getTime())) {
+      const now = new Date()
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+      const days = Math.round(
+        (target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
+      )
+      const label = target.toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      })
+      if (days < 0) {
+        const ago = Math.abs(days)
+        return `${label} - window closed ${ago} day${ago === 1 ? '' : 's'} ago`
+      }
+      if (days === 0) return `${label} - last day to file`
+      return `${label} - ${days} day${days === 1 ? '' : 's'} left`
+    }
+  }
+  // A window with no ship date cannot fix a date, and stating the window alone
+  // beats inventing one on a document that goes to a carrier.
+  if (stated !== null && stated > 0) {
+    return `${stated}-day filing window - no ship date recorded, so no deadline is fixed`
+  }
+  return ''
+}
+
 function laneText(details: Record<string, unknown>): string {
   const origin = text(details.origin_location) || text(details.origin_zone_zip_postal)
   const destination =
@@ -157,6 +193,7 @@ type ClaimSheet = {
   contract: Array<[string, string]>
   notes: string[]
   variance: string | null
+  deadline: string | null
   generated: string
 }
 
@@ -543,6 +580,33 @@ async function renderClaimPdf(
     y -= boxHeight + 12
   }
 
+  // Directly under the amount: a claim naming a variance without saying when it
+  // stops being claimable leaves the reader to work that out, and a missed
+  // filing window is the one failure this document cannot undo.
+  if (sheet.deadline) {
+    ensure(34)
+    y -= 4
+    page.drawText('FILE BY', {
+      x: MARGIN,
+      y: y - 8,
+      size: 7.5,
+      font: bold,
+      color: rgb(...GREY),
+    })
+    y -= 20
+    for (const line of wrap(sheet.deadline, 11, CONTENT_W)) {
+      page.drawText(line, {
+        x: MARGIN,
+        y: y - 11,
+        size: 11,
+        font: bold,
+        color: rgb(...INK),
+      })
+      y -= 14
+    }
+    y -= 6
+  }
+
   ensure(50)
   y -= 10
   page.drawLine({
@@ -662,6 +726,7 @@ export async function openClaimSheet(task: Task): Promise<void> {
     ],
     notes,
     variance: overcharge !== null ? formatCurrency(overcharge) : null,
+    deadline: claimWindowText(details) || null,
     generated: new Date().toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'long',
