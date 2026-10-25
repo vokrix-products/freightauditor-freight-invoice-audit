@@ -379,6 +379,27 @@ def _band_bounds(entry):
 
 
 def _band_percent(entry):
+    """The surcharge for a band, as a fraction, or None.
+
+    A percent sign is not guaranteed. The extractor returns the surcharge under
+    whichever key name the document suggests - surcharge_percent as a bare 29.5
+    on one rate sheet, surcharge_percentage as "29.5%" on another - so a reader
+    that only searched for a literal '%' silently found nothing. That made a
+    table which plainly covered the market price look as though it covered
+    nothing, and the audit then reported the market price as out of range.
+    """
+    if isinstance(entry, dict):
+        for key, value in entry.items():
+            if value is None:
+                continue
+            key_text = str(key).lower()
+            if "percent" not in key_text and "surcharge" not in key_text:
+                continue
+            number = _to_number(value)
+            if number is None or number <= 0:
+                continue
+            # 0.295 already is a fraction; 29.5 is a percentage.
+            return number if number <= 1 else number / 100.0
     for text in _band_texts(entry):
         match = PERCENT_PATTERN.search(text)
         if match:
@@ -417,6 +438,19 @@ def lookup_fuel_band(fuel_surcharge_table, diesel_price):
         if low - 0.005 <= diesel_price <= high + 0.005:
             return _band_percent(entry)
     return None
+
+
+def _band_covers(fuel_surcharge_table, diesel_price):
+    """Whether any contracted band contains this diesel price."""
+    if diesel_price is None:
+        return False
+    for entry in fuel_surcharge_table or []:
+        low, high = _band_bounds(entry)
+        if low is None or high is None:
+            continue
+        if low - 0.005 <= diesel_price <= high + 0.005:
+            return True
+    return False
 
 
 def audit_invoice(invoice_details, rate_lines, diesel_price=None):
@@ -482,6 +516,14 @@ def audit_invoice(invoice_details, rate_lines, diesel_price=None):
         if fuel_percent is None:
             if diesel_price is None:
                 notes.append("fuel cannot be audited: market diesel price unavailable")
+            elif _band_covers(table, diesel_price):
+                # Reached when a band contains the price but its surcharge could
+                # not be read. Reporting that as "outside the table" sent us
+                # looking at the wrong document for a whole round.
+                notes.append(
+                    f"fuel cannot be audited: the contracted table covers "
+                    f"{diesel_price:.3f} but the surcharge for that band could not be read"
+                )
             else:
                 notes.append(
                     f"fuel cannot be audited: market diesel {diesel_price:.3f} is outside "
@@ -573,7 +615,7 @@ def audit_invoice(invoice_details, rate_lines, diesel_price=None):
     if fuel_percent is not None:
         actual_fuel = _to_number(invoice_details.get("fuel_surcharge"))
         if actual_fuel is not None:
-            expected_fuel = fuel_percent * invoiced
+            expected_fuel = fuel_percent * expected
             fuel_difference = actual_fuel - expected_fuel
             if abs(fuel_difference) > MONEY_TOLERANCE:
                 detected += fuel_difference
