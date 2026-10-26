@@ -162,6 +162,15 @@ export const tasksColumns: ColumnDef<Task>[] = [
       // not match freight+fuel+accessorial"). Showing the first note under the
       // name means a flagged row says why it was flagged without a drill-down.
       const note = firstNote(row.original.details?._notes)
+      // An invoice can carry more than one priced finding, and the Overcharge
+      // column sums them while the note above explains only the first. Record
+      // 20440 showed "line-haul overcharge of 154.00" beside $213.29, so the
+      // row appeared to contradict itself and the fuel finding that makes up
+      // the difference was invisible. Stating the count and the total is what
+      // reconciles the two; the breakdown stays in the drill-down.
+      const rawNotes = row.original.details?._notes
+      const noteCount = Array.isArray(rawNotes) ? rawNotes.length : 0
+      const pricedTotal = toNumber(row.original.details?.overcharge_amount)
       // The row is titled with the carrier, and a carrier issues many invoices,
       // so three invoices from one carrier were indistinguishable - every row
       // read "Redwood Freight Systems". The number is already extracted and
@@ -185,6 +194,11 @@ export const tasksColumns: ColumnDef<Task>[] = [
           {note && (
             <span className='truncate text-xs text-muted-foreground'>
               {note}
+            </span>
+          )}
+          {noteCount > 1 && pricedTotal !== null && (
+            <span className='truncate text-xs tabular-nums text-muted-foreground'>
+              {noteCount} findings totalling {formatCurrency(pricedTotal)}
             </span>
           )}
         </div>
