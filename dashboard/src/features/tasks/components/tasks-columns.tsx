@@ -162,12 +162,26 @@ export const tasksColumns: ColumnDef<Task>[] = [
       // not match freight+fuel+accessorial"). Showing the first note under the
       // name means a flagged row says why it was flagged without a drill-down.
       const note = firstNote(row.original.details?._notes)
+      // The row is titled with the carrier, and a carrier issues many invoices,
+      // so three invoices from one carrier were indistinguishable - every row
+      // read "Redwood Freight Systems". The number is already extracted and
+      // stored, and it is what a person quotes when they contact the carrier.
+      const rawInvoice = row.original.details?.invoice_number
+      const invoiceNumber =
+        typeof rawInvoice === 'string' && rawInvoice.trim()
+          ? rawInvoice.trim()
+          : ''
       return (
         // The flex wrapper is load-bearing: it blockifies the spans inside it,
         // which is what lets truncate clip them. A bare span in a td stays
         // inline and silently refuses to truncate.
         <div className='flex flex-col gap-0.5'>
           <span className='truncate font-medium'>{row.getValue('title')}</span>
+          {invoiceNumber && (
+            <span className='truncate text-xs tabular-nums text-muted-foreground'>
+              {invoiceNumber}
+            </span>
+          )}
           {note && (
             <span className='truncate text-xs text-muted-foreground'>
               {note}
