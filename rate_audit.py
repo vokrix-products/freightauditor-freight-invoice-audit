@@ -178,21 +178,33 @@ def claim_deadline(invoice_details, rate_line):
     shipper has to pay, not how long the carrier accepts a claim - and a wrong
     date is worse than no date on a document that goes to a carrier.
 
-    Returns {"claim_window_days", "claim_deadline", "claim_window_source"} or
-    None when either the window or the ship date is missing.
+    The anchor matters as much as the count. A contract words its window against
+    a particular date - "180 days of the invoice date", "9 months after delivery"
+    - and counting from a different one while printing the contract's own wording
+    produces a deadline the contract does not support. Record 20435 said "180 days
+    of the invoice date" and counted from the ship date, three days earlier, which
+    is why invoice_date is now extracted rather than assumed absent.
+
+    Returns {"claim_window_days", "claim_deadline", "claim_window_source",
+    "claim_window_basis"} or None when the window or every usable date is missing.
     """
     window_days = _positive_int((rate_line or {}).get("claim_window_days"))
     if window_days is None:
         return None
+
+    invoice_date = _parse_iso_date((invoice_details or {}).get("invoice_date"))
     ship_date = _parse_iso_date((invoice_details or {}).get("ship_date"))
-    if ship_date is None:
+    anchor = invoice_date or ship_date
+    if anchor is None:
         return None
-    deadline = ship_date + timedelta(days=window_days)
+
+    deadline = anchor + timedelta(days=window_days)
     return {
         "claim_window_days": window_days,
         "claim_deadline": deadline.isoformat(),
         "claim_window_source": "rate_sheet",
         "claim_window_text": (rate_line or {}).get("claim_window_text"),
+        "claim_window_basis": "invoice_date" if invoice_date else "ship_date",
     }
 
 
@@ -453,6 +465,19 @@ def _band_covers(fuel_surcharge_table, diesel_price):
     return False
 
 
+def _matched_band(fuel_surcharge_table, diesel_price):
+    """(low, high) of the contracted band containing this price, or (None, None)."""
+    if diesel_price is None:
+        return None, None
+    for entry in fuel_surcharge_table or []:
+        low, high = _band_bounds(entry)
+        if low is None or high is None:
+            continue
+        if low - 0.005 <= diesel_price <= high + 0.005:
+            return low, high
+    return None, None
+
+
 def audit_invoice(invoice_details, rate_lines, diesel_price=None):
     """Audit one invoice against the customer's contracted rate lines.
 
@@ -479,10 +504,18 @@ def audit_invoice(invoice_details, rate_lines, diesel_price=None):
     # unreadable would hide the one deadline the product claims to protect.
     window = claim_deadline(invoice_details, rate_line)
     if window is not None:
-        # No note. The window has its own column, and the row hint is where
-        # findings go - repeating a 200-character explanation of a working
-        # feature on every row buried the carrier name behind boilerplate.
+        # No note when the deadline rests on the date the contract names. The
+        # window has its own column, and the row hint is where findings go.
         updates.update(window)
+        if window.get("claim_window_basis") == "ship_date":
+            stated = str(window.get("claim_window_text") or "").lower()
+            if "invoice" in stated:
+                # Silent substitution would put a date on a carrier document that
+                # the contract does not produce.
+                notes.append(
+                    "claim window counted from the ship date: the invoice states no "
+                    "issue date, and the agreement counts from the invoice date"
+                )
     else:
         notes.append(
             f"no claim window on the contracted rate agreement {reference or 'on file'}, "
@@ -603,6 +636,22 @@ def audit_invoice(invoice_details, rate_lines, diesel_price=None):
     # line: the contract expresses the surcharge as a percentage of the line-haul
     # charge, not of the transportation subtotal.
     if fuel_percent is not None:
+        # The price that selected this band, and the band itself, are stored on
+        # the record. Without them "29.50% of line-haul" is a figure the shipper
+        # cannot reproduce and the carrier cannot check - 70.84 of a 224.84
+        # headline rested on evidence the audit held and then discarded.
+        band_low, band_high = _matched_band(table, diesel_price)
+        updates["market_diesel_price"] = round(diesel_price, 4)
+        updates["fuel_bracket_percent"] = round(fuel_percent * 100, 2)
+        if band_low is not None and band_high is not None:
+            updates["fuel_bracket_range"] = f"{band_low:.3f}-{band_high:.3f}"
+            band_text = (
+                f" (market diesel {diesel_price:.3f} in the "
+                f"{band_low:.2f}-{band_high:.2f} band)"
+            )
+        else:
+            band_text = f" (market diesel {diesel_price:.3f})"
+
         actual_fuel = _to_number(invoice_details.get("fuel_surcharge"))
         if actual_fuel is not None:
             expected_fuel = fuel_percent * expected
@@ -612,7 +661,7 @@ def audit_invoice(invoice_details, rate_lines, diesel_price=None):
                 notes.append(
                     f"fuel surcharge variance of {fuel_difference:.2f}: invoiced "
                     f"{actual_fuel:.2f} against contracted {fuel_percent * 100:.2f}% of "
-                    f"line-haul = {expected_fuel:.2f}"
+                    f"line-haul = {expected_fuel:.2f}{band_text}"
                 )
 
     if abs(detected) > MONEY_TOLERANCE:

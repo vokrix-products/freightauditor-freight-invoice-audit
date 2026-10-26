@@ -13,6 +13,7 @@ INVOICE_FIELDS = [
     "invoice_number",
     "carrier_name",
     "ship_date",
+    "invoice_date",
     "payment_due_date",
     "bill_of_lading_pro_number",
     "origin_location",
@@ -55,6 +56,10 @@ SYSTEM_PROMPT = (
     "Rules:\n"
     "- Omit keys that are not present in the document. Never emit null values.\n"
     "- ship_date is the date the shipment was tendered, as YYYY-MM-DD.\n"
+    "- invoice_date is the date the invoice was issued, as YYYY-MM-DD. It is\n"
+    "  neither the ship date nor the due date. A rate agreement may count its\n"
+    "  filing window from this date, so reading another date into it moves the\n"
+    "  deadline. Omit the key when the invoice states no issue date.\n"
     "- payment_due_date is the invoice due date, as YYYY-MM-DD.\n"
     "- freight_charge is the invoice's transportation-charges subtotal: the figure\n"
     "  the invoice states as its Transportation Charges, i.e. the sum of every\n"
