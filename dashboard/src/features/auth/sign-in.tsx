@@ -193,9 +193,14 @@ export function SignIn() {
 [data-auth] form button[type='submit']{display:inline-flex;align-items:center;justify-content:center;width:100%;height:2.25rem;padding:0 1rem;border:1px solid #14151f;border-radius:.375rem;background-color:#14151f;color:#fafbfc;font-size:.875rem;font-weight:500}
 [data-auth] button[type='button']{display:inline-flex;align-items:center;justify-content:center;width:100%;height:2.25rem;padding:0 1rem;border:1px solid #d0d5dd;border-radius:.375rem;background-color:#fff;color:#0d0d12;font-size:.875rem;font-weight:500}}}`}</style>
       <div className='w-full max-w-sm space-y-6'>
-        <div className='space-y-1 text-center'>
+        <div className='space-y-2 text-center'>
           <h1 className='text-2xl font-semibold'>{(import.meta.env.VITE_PRODUCT_NAME as string) || 'Get started'}</h1>
-          <p className='text-sm text-muted-foreground'>{(import.meta.env.VITE_PRODUCT_DESCRIPTION as string) || 'Free for your first 3 — no credit card needed.'}</p>
+          <p className='text-sm text-muted-foreground'>{(import.meta.env.VITE_PRODUCT_DESCRIPTION as string) || 'Audit carrier invoices against your rate agreements.'}</p>
+          <p className='text-center'>
+            <span className='inline-flex rounded-md border px-3 py-1 text-xs font-medium'>
+              Free while in beta — no card, no upload limit
+            </span>
+          </p>
         </div>
         <Button variant='outline' className='w-full' onClick={handleGoogle} type='button'>
           <svg className='mr-2 h-4 w-4' viewBox='0 0 24 24'>
