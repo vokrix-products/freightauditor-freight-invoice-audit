@@ -652,6 +652,90 @@ _DATE_FIELDS = {
 }
 
 
+_ZIP = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
+_WINDOW = re.compile(
+    r"(?:within|no later than)\s+(\d+)\s+(day|days|month|months)"
+    r"|(\d+)\s+(day|days|month|months)\s+(?:of|from|after)\s+(?:the\s+)?"
+    r"(?:invoice|delivery|ship|receipt)",
+    re.IGNORECASE,
+)
+_FUEL_ROW = re.compile(
+    r"\$?\s*(\d+\.\d+)\s*(?:-|\u2013|to)\s*\$?\s*(\d+\.\d+).*?(\d+(?:\.\d+)?)\s*%"
+)
+_MIN_CHARGE = re.compile(
+    r"minimum\s+charge[^0-9$]*\$?\s*(\d[\d,]*(?:\.\d{1,2})?)", re.IGNORECASE
+)
+_PER_100 = re.compile(
+    r"\$\s*(\d+(?:\.\d+)?)\s*per\s+100\s*(?:lbs?|pounds)", re.IGNORECASE
+)
+
+
+def _parse_rate_sheet_extras(text: str, lines: List[str], record: Dict[str, Any]) -> None:
+    """Read the rate-sheet structures the label reader cannot see.
+
+    A rate sheet is not a list of labelled figures, it is a set of tables: lanes,
+    a fuel band table, and a filing period written as prose. Label matching alone
+    drops all three, and without them there is no contract to audit against -
+    every invoice would come back contract-review:warning with no figure, which
+    is the failure the README already documents. These four are read explicitly
+    so the model is not the only thing that can open a rate agreement.
+    """
+    if "claim_window_days" not in record:
+        match = _WINDOW.search(text)
+        if match:
+            value = match.group(1) or match.group(3)
+            unit = (match.group(2) or match.group(4) or "").lower()
+            if value:
+                days = int(value) * (30 if unit.startswith("month") else 1)
+                if days > 0:
+                    record["claim_window_days"] = days
+                    record["claim_window_text"] = match.group(0).strip()
+
+    if "base_rate" not in record:
+        match = _PER_100.search(text)
+        if match:
+            record["base_rate"] = _to_float(match.group(1))
+            record["rate_basis"] = "per 100 lbs"
+
+    if "minimum_charge" not in record:
+        match = _MIN_CHARGE.search(text)
+        if match:
+            record["minimum_charge"] = _to_float(match.group(1))
+
+    bands: List[Dict[str, Any]] = []
+    for line in lines:
+        match = _FUEL_ROW.search(line)
+        if not match:
+            continue
+        low = _to_float(match.group(1))
+        high = _to_float(match.group(2))
+        percent = _to_float(match.group(3))
+        if low is None or high is None or percent is None:
+            continue
+        bands.append(
+            {
+                "fuel_price_range": f"${low:.2f} - ${high:.2f} / gal",
+                "surcharge_percent": percent,
+            }
+        )
+    if bands and not record.get("fuel_surcharge_table"):
+        record["fuel_surcharge_table"] = bands
+
+    for line in lines:
+        lowered = line.lower()
+        zips = _ZIP.findall(line)
+        if not zips:
+            continue
+        # Word boundaries matter: "Total" contains "to", and a total line must
+        # never be read as a destination.
+        if re.search(r"\borigin\b", lowered) and not record.get("origin_zone_zip_postal"):
+            record["origin_zone_zip_postal"] = zips[0]
+            record.setdefault("origin_location", line.split(":", 1)[-1].strip())
+        elif re.search(r"\bdestination\b", lowered) and not record.get("destination_zone_zip_postal"):
+            record["destination_zone_zip_postal"] = zips[-1]
+            record.setdefault("destination_location", line.split(":", 1)[-1].strip())
+
+
 def _parse_text_fields(text: str) -> List[Dict[str, Any]]:
     """Read an invoice or rate sheet from plain text without calling a model.
 
@@ -765,6 +849,8 @@ def _parse_text_fields(text: str) -> List[Dict[str, Any]]:
         items.append(item)
     if items:
         record["invoice_line_items"] = items
+
+    _parse_rate_sheet_extras(text, lines, record)
 
     if len(record) <= 1:
         return []
