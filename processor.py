@@ -738,6 +738,49 @@ def _parse_rate_sheet_extras(text: str, lines: List[str], record: Dict[str, Any]
             record.setdefault("destination_location", line.split(":", 1)[-1].strip())
 
 
+_HEADING_WORDS = re.compile(
+    r"\b(?:INVOICE|RATE\s+AGREEMENT|RATE\s+SHEET|RATE\s+SCHEDULE|"
+    r"AGREEMENT|SCHEDULE|STATEMENT|SUMMARY|DETAILS|CONTRACT|TARIFF|"
+    r"CONFIRMATION)\b",
+    re.IGNORECASE,
+)
+
+
+def _carrier_from_header(lines: List[str]) -> Any:
+    """The carrier name from the top of a document, joining a wrapped line.
+
+    A generated invoice carries the name across two lines - "REDWOOD FREIGHT"
+    then "SYSTEMS INVOICE" - so reading only the first line called the carrier
+    REDWOOD FREIGHT while the rate sheet's labelled field said REDWOOD FREIGHT
+    SYSTEMS. Duplicate detection keys on the carrier together with the invoice
+    number, so the two spellings never matched and a re-uploaded invoice would
+    not be caught as a duplicate, which is silent.
+
+    Joins consecutive leading lines that carry no label and no long number, then
+    removes the document-type word that shares a line with the tail of the name.
+    """
+    collected: List[str] = []
+    for line in lines[:4]:
+        text = line.strip()
+        if not text:
+            break
+        if ":" in text[:40] or re.search(r"\d{3,}", text):
+            break
+        trimmed = _HEADING_WORDS.sub("", text).strip(" \t-,")
+        if not trimmed:
+            # A line that was nothing but a document-type word ("CONTRACT",
+            # "INVOICE") ends the heading. Carrying on past it read the rate
+            # sheet's type label as part of the carrier name, so the sheet said
+            # REDWOOD FREIGHT SYSTEMS CONTRACT while the invoice said REDWOOD
+            # FREIGHT SYSTEMS, and duplicate matching keys on the carrier.
+            break
+        collected.append(trimmed)
+        if len(collected) >= 3:
+            break
+    name = re.sub(r"\s{2,}", " ", " ".join(collected)).strip()
+    return name if re.search(r"[A-Za-z]{3}", name) else None
+
+
 def _parse_text_fields(text: str) -> List[Dict[str, Any]]:
     """Read an invoice or rate sheet from plain text without calling a model.
 
@@ -769,10 +812,9 @@ def _parse_text_fields(text: str) -> List[Dict[str, Any]]:
     if carrier:
         record["carrier_name"] = carrier
     else:
-        for line in lines[:5]:
-            if re.search(r"[A-Za-z]{3}", line) and not re.search(r"\d{3,}", line):
-                record["carrier_name"] = line[:120]
-                break
+        header_name = _carrier_from_header(lines)
+        if header_name:
+            record["carrier_name"] = header_name
 
     for line in lines:
         lowered = line.lower()
