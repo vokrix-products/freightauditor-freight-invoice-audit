@@ -1016,8 +1016,12 @@ def _extract_rows(file_bytes: bytes) -> List[Dict[str, Any]]:
 def process_file(file_bytes: bytes) -> List[Dict[str, Any]]:
     raw_rows = _extract_rows(file_bytes)
 
+    # Off by default. The free tier has no per-account cap worth relying on, so
+    # an on-by-default model would spend money on every upload that arrived.
+    # Set FREIGHTAUDITOR_TEXT_MODEL=on to route digital PDF text through DeepSeek
+    # again; OCR text never takes the model path either way.
     use_model_for_text = os.environ.get(
-        TEXT_MODEL_FLAG, "on"
+        TEXT_MODEL_FLAG, "off"
     ).strip().lower() not in {"0", "off", "false", "no"}
 
     normalized_rows: List[Dict[str, Any]] = []

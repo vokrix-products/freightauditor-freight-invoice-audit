@@ -53,6 +53,16 @@ export function useJobs() {
 
 const TRIAL_LIMIT = 3
 
+// The paywall is off. Set this back to false to restore the three-upload trial
+// and the upgrade flow; nothing else was deleted, so the checkout path, the
+// subscription lookup and the paywall dialog are all still here and still work.
+//
+// It ships together with FREIGHTAUDITOR_TEXT_MODEL defaulting to off in
+// processor.py. Removing the cap while the model was on would have made every
+// free upload a billable call with no ceiling - a public wallet rather than a
+// free tier. The two changes are one decision, not two.
+export const FREE_MODE = true
+
 // The trial gate used to key off `user.product_id`, a single scalar carried in
 // app_metadata. On a multi-product platform that scalar can only hold ONE
 // product, so a customer paying for this product *and* another was capped at
@@ -164,7 +174,13 @@ export function useTrialUsage() {
     (user as PaidCheckUser | null)?.app_metadata?.product_id === PRODUCT_ID
   // While the subscription query is in flight fall back to the metadata marker,
   // so a paid user is never briefly shown the upgrade prompt.
-  const isPaid = isSuccess ? !!subIsPaid || !!metaIsPaid : !!metaIsPaid
+  // In free mode the card must not show a counter or an upgrade prompt, so the
+  // only thing it can be told is that nobody is blocked.
+  const isPaid = FREE_MODE
+    ? true
+    : isSuccess
+      ? !!subIsPaid || !!metaIsPaid
+      : !!metaIsPaid
   return { used: used ?? 0, limit: TRIAL_LIMIT, isPaid }
 }
 
@@ -184,7 +200,7 @@ export function useUploadJob() {
 
   async function uploadFile(file: File, jobType = 'process_upload') {
     if (!user) { setError('Not logged in'); return null }
-    if (!(await isPaidForProduct(user as PaidCheckUser))) {
+    if (!FREE_MODE && !(await isPaidForProduct(user as PaidCheckUser))) {
       const count = await getCreditCount(user.id)
       if (count >= TRIAL_LIMIT) { setTrialLimitReached(true); return null }
     }
@@ -214,7 +230,7 @@ export function useUploadJob() {
   async function uploadFiles(files: File[], jobType = 'process_upload') {
     if (!user) { setError('Not logged in'); return null }
     if (files.length === 0) { setError('No files selected'); return null }
-    if (!(await isPaidForProduct(user as PaidCheckUser))) {
+    if (!FREE_MODE && !(await isPaidForProduct(user as PaidCheckUser))) {
       const count = await getCreditCount(user.id)
       if (count >= TRIAL_LIMIT) { setTrialLimitReached(true); return null }
     }

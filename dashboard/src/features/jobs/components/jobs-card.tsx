@@ -32,6 +32,7 @@ import {
   useUploadJob,
   useTrialUsage,
   downloadJobResult,
+  FREE_MODE,
   type Job,
 } from '../data/jobs'
 import { AnimatedCircularProgressBar } from '@/components/magicui/animated-circular-progress-bar'
@@ -316,6 +317,15 @@ export function JobsCard() {
         )}
       </CardHeader>
       <CardContent className='space-y-4'>
+        {SHOW_UPLOAD && FREE_MODE && (
+          // No number. The counter it replaces was a lifetime count of jobs, not
+          // a monthly one, so any figure advertised here would be a claim the
+          // code cannot honour.
+          <p className='rounded-lg border border-border bg-muted/30 px-4 py-2 text-xs text-muted-foreground'>
+            Free while in beta — upload as many invoices and rate agreements as
+            you need.
+          </p>
+        )}
         {SHOW_UPLOAD && !isPaid && (
           <div className='flex items-center gap-4 rounded-lg border border-border bg-muted/30 px-4 py-3'>
             <AnimatedCircularProgressBar
