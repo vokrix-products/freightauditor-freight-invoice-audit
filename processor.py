@@ -1,5 +1,6 @@
 import csv
 import io
+import os
 import re
 from datetime import date, datetime
 from typing import Any, Dict, List
@@ -45,7 +46,7 @@ KEY_ALIASES_RAW = {
     "destination_location": ["destination location", "destination", "destination city", "destination address", "destination city/state/postal code", "destination_zip", "destination zone"],
     "actual_weight": ["actual weight", "actual weight (lbs)", "actual_weight", "weight"],
     "billable_weight": ["billable weight", "billed weight", "billable_weight", "billing weight"],
-    "freight_charge": ["freight charge", "freight", "freight charges", "freight_charge", "linehaul", "line haul", "linehaul charge", "line haul charge"],
+    "freight_charge": ["freight charge", "freight", "freight charges", "freight_charge", "linehaul", "line haul", "linehaul charge", "line haul charge", "transportation charge", "transportation charges"],
     "fuel_surcharge": ["fuel surcharge", "fuel", "fuel_surcharge", "fsc"],
     "accessorial_codes": ["accessorial code", "accessorial codes", "accessorial_code"],
     "accessorial_descriptions": ["accessorial description", "accessorial descriptions", "accessorial_desc"],
@@ -217,6 +218,7 @@ def _normalize_row(row: Dict[str, Any]) -> Dict[str, Any]:
             "_type": "unknown",
             "raw_text": raw,
             "carrier_name": _heuristic_carrier(raw),
+            "_ocr": bool(row.get("_ocr")),
         }
 
     normalized: Dict[str, Any] = {}
@@ -554,14 +556,238 @@ def apply_cross_upload_duplicates(
     return updated_records
 
 
+# A page carrying fewer than this many characters has no usable text layer.
+# A scan yields a handful of characters or none; a real invoice page yields
+# hundreds. Too high and a clean invoice is needlessly rasterised at 200 dpi;
+# too low and a scan still reaches the extractor as noise.
+OCR_MIN_CHARS_PER_PAGE = 40
+OCR_DPI = 200
+
+
+def _ocr_pdf(file_bytes: bytes) -> str:
+    """Read a PDF that carries no text layer by rasterising and OCRing it.
+
+    Carrier invoices usually arrive as emailed PDFs, and a fair share of those
+    are scans. Before this, a scan produced no record at all and its bytes fell
+    through to the text reader, which decoded the PDF as UTF-8 with errors
+    ignored and handed several thousand characters of binary noise to the
+    extractor - so the failure was not merely empty, it was plausible-looking.
+
+    Returns "" when pytesseract or its tesseract binary is unavailable, or when
+    a page cannot be rasterised. The caller then reports the document as
+    unreadable rather than inventing fields from nothing.
+    """
+    try:
+        try:
+            import pymupdf
+        except ImportError:
+            import fitz as pymupdf
+        import pytesseract
+        from PIL import Image
+    except Exception:
+        print("ocr unavailable: pymupdf, pytesseract or pillow is not installed")
+        return ""
+
+    pages: List[str] = []
+    try:
+        document = pymupdf.open(stream=file_bytes, filetype="pdf")
+    except Exception as error:
+        print(f"ocr failed: cannot open pdf ({error})")
+        return ""
+
+    try:
+        zoom = OCR_DPI / 72.0
+        matrix = pymupdf.Matrix(zoom, zoom)
+        for page in document:
+            pixmap = page.get_pixmap(matrix=matrix)
+            image = Image.frombytes(
+                "RGB", (pixmap.width, pixmap.height), pixmap.samples
+            )
+            pages.append(pytesseract.image_to_string(image))
+    except Exception as error:
+        # The usual cause is the tesseract binary missing from the image, which
+        # only the Dockerfile can fix.
+        print(f"ocr failed: {error}")
+        return ""
+    finally:
+        document.close()
+
+    return "\n".join(pages).strip()
+
+
+TEXT_MODEL_FLAG = "FREIGHTAUDITOR_TEXT_MODEL"
+
+_LINE_AMOUNT = re.compile(r"\$?\s*(-?\d[\d,]*(?:\.\d{1,2})?)\s*$")
+_BRACKETED = re.compile(r"\([^)]*\)")
+_DOLLAR = re.compile(r"\$\s*(\d[\d,]*(?:\.\d{1,2})?)")
+_ANY_DATE = re.compile(r"\b(\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4})\b")
+_LBS_RATE = re.compile(
+    r"(\d[\d,]*(?:\.\d+)?)\s*(?:lbs?|pounds)\s*@\s*\$?\s*(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_INVOICE_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
+
+# Label, canonical field. Matched case-insensitively on the same line as the
+# value, which is how an invoice and a rate sheet both present these.
+_TEXT_LABELS = (
+    ("invoice number", "invoice_number"),
+    ("invoice no", "invoice_number"),
+    ("bill of lading", "bill_of_lading_pro_number"),
+    ("pro number", "bill_of_lading_pro_number"),
+    ("ship date", "ship_date"),
+    ("invoice date", "invoice_date"),
+    ("due date", "payment_due_date"),
+    ("effective date", "effective_date"),
+    ("expiration date", "expiration_date"),
+    ("effective", "effective_date"),
+    ("expires", "expiration_date"),
+)
+
+_DATE_FIELDS = {
+    "ship_date",
+    "invoice_date",
+    "payment_due_date",
+    "effective_date",
+    "expiration_date",
+}
+
+
+def _parse_text_fields(text: str) -> List[Dict[str, Any]]:
+    """Read an invoice or rate sheet from plain text without calling a model.
+
+    Used for text recovered by OCR: sending that to DeepSeek would put a
+    per-page price on the one input a free tier is meant to absorb, and OCR
+    output is the narrower input anyway - a transcript of printed lines, where a
+    labelled figure can be read directly.
+
+    Deliberately conservative. A field is taken only when a known label shares
+    the line with a figure; nothing is inferred from an unlabelled line. A field
+    left missing flows to missing:critical or contract-review:warning, which is
+    honest. A guessed figure would flow to a wrong overcharge, which is not, and
+    that is the one rule this codebase repeats.
+
+    The weak spot is genuine multiline layouts - several charges inside one
+    table cell, or a total split across rows - where this reads less than the
+    model does. It reports less rather than misreading.
+    """
+    if not text or not text.strip():
+        return []
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return []
+
+    record: Dict[str, Any] = {"_type": "unknown"}
+
+    carrier = _heuristic_carrier(text)
+    if carrier:
+        record["carrier_name"] = carrier
+    else:
+        for line in lines[:5]:
+            if re.search(r"[A-Za-z]{3}", line) and not re.search(r"\d{3,}", line):
+                record["carrier_name"] = line[:120]
+                break
+
+    for line in lines:
+        lowered = line.lower()
+
+        dates = [value for value in (_iso_date(item) for item in _ANY_DATE.findall(line)) if value]
+        if len(dates) >= 2 and re.search(r"\bthrough\b|\bthru\b", lowered):
+            record.setdefault("effective_date", dates[0])
+            record.setdefault("expiration_date", dates[-1])
+
+        for label, field in _TEXT_LABELS:
+            if field in record or label not in lowered:
+                continue
+            tail = line[lowered.index(label) + len(label):]
+            if field in _DATE_FIELDS:
+                found = _ANY_DATE.search(tail)
+                if found:
+                    iso = _iso_date(found.group(1))
+                    if iso:
+                        record[field] = iso
+                continue
+            token = _INVOICE_TOKEN.search(tail.lstrip(" :#-"))
+            if token:
+                record[field] = token.group(0)
+
+        if ":" in line:
+            head, _, value = line.partition(":")
+            value = value.strip()
+            head_token = _token(head)
+            if value:
+                if head_token in {"origin", "originlocation"}:
+                    record.setdefault("origin_zone_zip_postal", value)
+                    record.setdefault("origin_location", value)
+                elif head_token in {"destination", "destinationlocation"}:
+                    record.setdefault("destination_zone_zip_postal", value)
+                    record.setdefault("destination_location", value)
+                elif head_token in {"ratebasis", "basis"}:
+                    record.setdefault("rate_basis", value)
+
+        stripped = _BRACKETED.sub(" ", line)
+        amount = None
+        label = ""
+        amount_match = _LINE_AMOUNT.search(stripped)
+        if amount_match:
+            amount = _to_float(amount_match.group(1))
+            label = stripped[: amount_match.start()]
+        else:
+            money = _DOLLAR.search(stripped)
+            if money and ":" in stripped:
+                amount = _to_float(money.group(1))
+                label = stripped.split(":", 1)[0]
+        if amount is None:
+            continue
+        label = label.strip(" .:-\t")
+        if not label or not re.search(r"[A-Za-z]", label):
+            continue
+        canonical = _canonical_key(label)
+        if canonical in NUMERIC_FIELDS and canonical not in record:
+            record[canonical] = amount
+
+    items: List[Dict[str, Any]] = []
+    for line in lines:
+        match = _LBS_RATE.search(line)
+        if not match:
+            continue
+        dollars = _DOLLAR.findall(line)
+        if len(dollars) < 2:
+            continue
+        item: Dict[str, Any] = {
+            "weight": _to_float(match.group(1)),
+            "rate_per_100lbs": _to_float(match.group(2)),
+            "description": _BRACKETED.sub(" ", line).split("$")[0].strip(" ."),
+        }
+        amount = _to_float(dollars[-1])
+        if amount is not None:
+            item["amount"] = amount
+        items.append(item)
+    if items:
+        record["invoice_line_items"] = items
+
+    if len(record) <= 1:
+        return []
+    return [record]
+
+
 def _try_pdf(file_bytes: bytes) -> List[Dict[str, Any]]:
     try:
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
             text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-        if text.strip():
-            return [{"raw_text": text}]
+            page_count = len(pdf.pages)
     except Exception:
-        pass
+        return []
+
+    if len(text.strip()) >= OCR_MIN_CHARS_PER_PAGE * max(page_count, 1):
+        return [{"raw_text": text}]
+
+    ocr_text = _ocr_pdf(file_bytes)
+    if ocr_text:
+        return [{"raw_text": ocr_text, "_ocr": True}]
+
+    if text.strip():
+        return [{"raw_text": text}]
     return []
 
 
@@ -635,6 +861,13 @@ def _try_text_or_csv(file_bytes: bytes) -> List[Dict[str, Any]]:
 
 
 def _extract_rows(file_bytes: bytes) -> List[Dict[str, Any]]:
+    # A PDF identifies itself in its first bytes. Running the text reader over
+    # PDF bytes was how a scan became binary noise instead of an honest failure:
+    # the reader decoded the file as UTF-8 with errors ignored and returned it
+    # as a document.
+    if file_bytes[:5] == b"%PDF-":
+        return _try_pdf(file_bytes)
+
     rows = _try_pdf(file_bytes)
     if rows:
         return rows
@@ -653,18 +886,35 @@ def _extract_rows(file_bytes: bytes) -> List[Dict[str, Any]]:
 def process_file(file_bytes: bytes) -> List[Dict[str, Any]]:
     raw_rows = _extract_rows(file_bytes)
 
+    use_model_for_text = os.environ.get(
+        TEXT_MODEL_FLAG, "on"
+    ).strip().lower() not in {"0", "off", "false", "no"}
+
     normalized_rows: List[Dict[str, Any]] = []
     for row in raw_rows:
         if "raw_text" in row:
-            extracted = extract_from_unstructured_text(row["raw_text"])
+            ocr = bool(row.get("_ocr"))
+            extracted: List[Dict[str, Any]] = []
+            if ocr or not use_model_for_text:
+                # OCR text never reaches the model. A scanned page that cost a
+                # call on every read would price the free tier per document.
+                extracted = _parse_text_fields(row["raw_text"])
+            else:
+                extracted = extract_from_unstructured_text(row["raw_text"])
             if extracted:
                 for item in extracted:
                     normalized = _normalize_row(item)
                     if normalized:
+                        if ocr:
+                            # _normalize_row builds a fresh dict, so the flag has
+                            # to be carried by hand or the OCR warning is lost on
+                            # exactly the documents that parsed.
+                            normalized["_ocr"] = True
                         normalized_rows.append(normalized)
             else:
                 normalized = _normalize_row(row)
                 if normalized:
+                    normalized["_ocr"] = ocr
                     normalized_rows.append(normalized)
         else:
             normalized = _normalize_row(row)
@@ -681,10 +931,21 @@ def process_file(file_bytes: bytes) -> List[Dict[str, Any]]:
     output: List[Dict[str, Any]] = []
     for record in normalized_rows:
         forced_type = record.pop("_document_type_hint", None)
+        ocr_used = bool(record.pop("_ocr", False))
         document_type = forced_type or _detect_document_type(record)
         record["_type"] = document_type
 
         status, notes = _assign_status(record, normalized_rows)
+
+        if ocr_used:
+            # Text read from pixels is less reliable than text read from the
+            # file, so the row says so. Without this an OCR'd invoice that
+            # produced a wrong figure would look exactly like a clean one.
+            notes = list(notes) + [
+                "read by OCR: this PDF has no text layer, so figures are "
+                "recovered from the scanned image and are worth checking against "
+                "the original"
+            ]
 
         title = (
             record.get("carrier_name")

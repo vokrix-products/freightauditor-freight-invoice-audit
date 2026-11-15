@@ -2,3 +2,6 @@ openai
 requests
 pdfplumber
 openpyxl
+pymupdf
+pytesseract
+pillow
