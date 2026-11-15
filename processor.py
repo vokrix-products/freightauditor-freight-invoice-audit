@@ -1069,6 +1069,11 @@ def process_file(
             ocr = bool(row.get("_ocr"))
             extracted: List[Dict[str, Any]] = []
             escalated = False
+            # Set whether or not the call returns anything. A call that comes back
+            # empty has still been paid for, so counting only successful
+            # escalations under-reported real spend and the cap would never fire
+            # on a document the model could not read - the expensive case.
+            model_attempted = False
             if ocr or not use_model_for_text:
                 extracted = _parse_text_fields(row["raw_text"])
                 if model_budget and _needs_model(extracted[0] if extracted else None):
@@ -1077,6 +1082,7 @@ def process_file(
                     # real signal - this is the document that would otherwise
                     # reach the user as "could not read" and be abandoned.
                     retried = extract_from_unstructured_text(row["raw_text"])
+                    model_attempted = True
                     if retried:
                         extracted = retried
                         escalated = True
@@ -1093,15 +1099,20 @@ def process_file(
                             # exactly the documents that parsed.
                             normalized["_ocr"] = True
                         if escalated:
-                            # Written into details so the poller can count this
-                            # month's calls without a separate table, and so the
-                            # drill-down says which reader produced the figures.
+                            # Written into details so the drill-down says which
+                            # reader produced the figures. Accounting is separate:
+                            # _model_attempted counts the spend, _extracted_by
+                            # names the source, and on a failed call they differ.
                             normalized["_extracted_by"] = "model"
+                        if model_attempted:
+                            normalized["_model_attempted"] = True
                         normalized_rows.append(normalized)
             else:
                 normalized = _normalize_row(row)
                 if normalized:
                     normalized["_ocr"] = ocr
+                    if model_attempted:
+                        normalized["_model_attempted"] = True
                     normalized_rows.append(normalized)
         else:
             normalized = _normalize_row(row)

@@ -201,11 +201,16 @@ def count_model_extractions_this_month():
     """
     total = 0
     offset = 0
+    counted_files = set()
     while True:
         params = {
             "product_id": f"eq.{PRODUCT_ID}",
             "created_at": f"gte.{_month_start_iso()}",
-            "select": "details",
+            # source_file_path comes along so a rate sheet with several lanes is
+            # counted once. _expand_rate_lanes turns one sheet into one record per
+            # lane, each carrying the flags, so counting rows counted six calls
+            # for a single one and fired the cap early.
+            "select": "details,source_file_path",
             "limit": str(HISTORY_PAGE_SIZE),
             "offset": str(offset),
             "order": "id.asc",
@@ -219,8 +224,13 @@ def count_model_extractions_this_month():
         page = resp.json()
         for row in page:
             details = row.get("details") or {}
-            if isinstance(details, dict) and details.get("_extracted_by") == "model":
-                total += 1
+            if not isinstance(details, dict) or not details.get("_model_attempted"):
+                continue
+            key = row.get("source_file_path") or f"row:{offset}:{total}"
+            if key in counted_files:
+                continue
+            counted_files.add(key)
+            total += 1
         if len(page) < HISTORY_PAGE_SIZE:
             return total
         offset += HISTORY_PAGE_SIZE
