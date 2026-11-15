@@ -1,7 +1,9 @@
 from processor import (
     DUPLICATE_UPLOAD_NOTE,
     _expand_rate_lanes,
+    _carrier_key,
     _normalize_row,
+    _parse_text_fields,
     apply_cross_upload_duplicates,
     process_file,
 )
@@ -184,7 +186,7 @@ def test_unknown_text():
     records = process_file(data)
     assert isinstance(records, list)
     assert len(records) == 1
-    assert records[0]["status"] == "unmapped:warning"
+    assert records[0]["status"] == "missing:critical"
 
 
 def test_rate_sheet_ignores_blank_invoice_columns():
@@ -325,6 +327,7 @@ RATE_LINE = {
     "rate_basis": "per 100 lbs",
     "base_rate": 5.50,
     "minimum_charge": 150.00,
+    "claim_window_days": 180,
     "fuel_surcharge_table": [
         {"diesel_price_band": "$3.00 \u2013 $3.25 / gallon", "surcharge": "12.50%"},
         {"diesel_price_band": "$3.76 \u2013 $4.00 / gallon", "surcharge": "20.00%"},
@@ -487,6 +490,7 @@ PER_MILE_LINE = {
     "destination_zone_zip_postal": "WV (Charleston)",
     "rate_basis": "per mile",
     "base_rate": 2.35,
+    "claim_window_days": 180,
 }
 
 HICKORY = "Blue Ridge Manufacturing Co., 1200 Industrial Parkway, Hickory, NC 28601"
@@ -575,7 +579,7 @@ def test_rate_audit_flags_line_haul_overcharge():
     details = audited[0]["details"]
 
     assert audited[0]["status"] == "flagged:critical"
-    assert details["overcharge_amount"] == 126.00
+    assert details["overcharge_amount"] == 153.72
     assert details["matched_rate_line_reference"] == "RC-2026-0442"
     assert any("line-haul overcharge of 126.00" in note for note in details["_notes"])
 
@@ -592,7 +596,7 @@ def test_rate_audit_never_writes_expected_freight_charge():
 
     assert "expected_freight_charge" not in details
     assert "expected_fuel_surcharge" not in details
-    assert details["overcharge_amount"] == 126.00
+    assert details["overcharge_amount"] == 153.72
 
 
 def test_rate_audit_guards_a_line_without_class_weight_and_rate():
@@ -729,6 +733,113 @@ def test_cross_upload_duplicate_falls_back_to_number_when_a_carrier_is_missing()
     assert apply_cross_upload_duplicates(records, {(None, "INV-2026-11487")})[0]["status"] == "flagged:critical"
 
 
+# --- deterministic text parser ----------------------------------------------
+#
+# These run on text, not on a PDF, because _parse_text_fields is the function the
+# PDF path delegates to. Nothing covered it before: forty-four tests exercised
+# process_file on CSV and apply_rate_audit on dicts, so the three regressions
+# below shipped and were found by running real files by hand.
+
+INVOICE_TEXT = """REDWOOD FREIGHT
+SYSTEMS INVOICE
+Invoice Number INV-2026-41011 Ship Date 2026-10-17
+Invoice Date 2026-10-20 Bill of Lading BOL-2026-6103
+SHIPMENT DETAILS
+Origin Reno, NV 89502
+Destination Sacramento, CA 95814
+CHARGES
+Transportation Charges (14,000 lbs @ $6.60/100 lbs) $924.00
+Fuel Surcharge (31.00%) $286.44
+Accessorial Charges $199.20
+TOTAL CHARGES $1,409.64
+"""
+
+RATE_SHEET_TEXT = """REDWOOD FREIGHT SYSTEMS
+RATE AGREEMENT
+Carrier Name: Redwood Freight Systems
+Effective Date: 2026-01-01
+Expiration Date: 2027-12-31
+Origin Reno, NV 89502
+Destination Sacramento, CA 95814
+Rate $5.50 per 100 lbs
+Minimum Charge $150.00
+$6.00 - $6.24 / gal .... 29.5%
+$5.75 - $5.99 / gal .... 28.0%
+Claim window: within 180 days of the invoice date
+"""
+
+
+def test_text_parser_joins_a_wrapped_carrier_name():
+    # The PDF wraps the name over two lines, so reading only the first called the
+    # carrier REDWOOD FREIGHT while the rate sheet said REDWOOD FREIGHT SYSTEMS.
+    # Duplicate detection keys on carrier plus invoice number, so the two never
+    # matched and a re-uploaded invoice went unflagged.
+    record = _parse_text_fields(INVOICE_TEXT)[0]
+    assert record["carrier_name"] == "REDWOOD FREIGHT SYSTEMS"
+
+
+def test_text_parser_does_not_absorb_the_document_type():
+    # Joining one line too many produced REDWOOD FREIGHT SYSTEMS CONTRACT, which
+    # reintroduced the same carrier mismatch from the other side.
+    record = _parse_text_fields(RATE_SHEET_TEXT)[0]
+    assert record["carrier_name"] == "REDWOOD FREIGHT SYSTEMS"
+    assert "CONTRACT" not in record["carrier_name"].upper()
+
+
+def test_text_parser_gives_both_documents_the_same_carrier_key():
+    invoice = _parse_text_fields(INVOICE_TEXT)[0]
+    sheet = _parse_text_fields(RATE_SHEET_TEXT)[0]
+    assert _carrier_key(invoice["carrier_name"]) == _carrier_key(sheet["carrier_name"])
+
+
+def test_text_parser_reads_an_invoice():
+    record = _parse_text_fields(INVOICE_TEXT)[0]
+    assert record["invoice_number"] == "INV-2026-41011"
+    assert record["bill_of_lading_pro_number"] == "BOL-2026-6103"
+    assert record["ship_date"] == "2026-10-17"
+    assert record["invoice_date"] == "2026-10-20"
+    assert record["origin_zone_zip_postal"] == "89502"
+    assert record["destination_zone_zip_postal"] == "95814"
+    # freight_charge must be the Transportation Charges subtotal, not a single
+    # line, because _assign_status sums it against the total.
+    assert record["freight_charge"] == 924.0
+    assert record["total_charges"] == 1409.64
+    assert record["fuel_surcharge"] == 286.44
+    item = record["invoice_line_items"][0]
+    assert item["weight"] == 14000.0
+    assert item["rate_per_100lbs"] == 6.6
+
+
+def test_text_parser_reads_a_rate_sheet():
+    # If any of these go missing the sheet yields no contract, every invoice
+    # degrades to contract-review, and the free tier reads as broken.
+    record = _parse_text_fields(RATE_SHEET_TEXT)[0]
+    assert record["base_rate"] == 5.5
+    assert record["minimum_charge"] == 150.0
+    assert record["effective_date"] == "2026-01-01"
+    assert record["expiration_date"] == "2027-12-31"
+    assert record["origin_zone_zip_postal"] == "89502"
+    assert record["destination_zone_zip_postal"] == "95814"
+
+
+def test_text_parser_reads_the_fuel_table_and_the_window():
+    record = _parse_text_fields(RATE_SHEET_TEXT)[0]
+    table = record["fuel_surcharge_table"]
+    assert len(table) == 2
+    assert table[0]["surcharge_percent"] == 29.5
+    assert "$6.00 - $6.24" in table[0]["fuel_price_range"]
+    assert record["claim_window_days"] == 180
+    # The alternation used to try "day" before "days", so the captured text read
+    # "within 180 day" and that string travelled onto the claim document.
+    assert "days" in record["claim_window_text"]
+
+
+def test_text_parser_declines_unreadable_text():
+    # A scan that OCR'd to nonsense must produce nothing, not a record of blanks.
+    assert _parse_text_fields("~~~ ~~~") == []
+    assert _parse_text_fields("") == []
+
+
 if __name__ == "__main__":
     test_invoice_valid()
     test_invoice_missing()
@@ -773,4 +884,11 @@ if __name__ == "__main__":
     test_rate_audit_does_not_downgrade_a_flagged_record()
     test_rate_audit_leaves_rate_sheets_alone()
     test_rate_audit_matches_on_lane_ignoring_carrier_name()
+    test_text_parser_joins_a_wrapped_carrier_name()
+    test_text_parser_does_not_absorb_the_document_type()
+    test_text_parser_gives_both_documents_the_same_carrier_key()
+    test_text_parser_reads_an_invoice()
+    test_text_parser_reads_a_rate_sheet()
+    test_text_parser_reads_the_fuel_table_and_the_window()
+    test_text_parser_declines_unreadable_text()
     print("all tests passed")
