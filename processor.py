@@ -217,7 +217,7 @@ def _normalize_row(row: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "_type": "unknown",
             "raw_text": raw,
-            "carrier_name": _heuristic_carrier(raw),
+            "carrier_name": (_heuristic_carrier(raw) or "").upper() or None,
             "_ocr": bool(row.get("_ocr")),
         }
 
@@ -810,11 +810,11 @@ def _parse_text_fields(text: str) -> List[Dict[str, Any]]:
 
     carrier = _heuristic_carrier(text)
     if carrier:
-        record["carrier_name"] = carrier
+        record["carrier_name"] = carrier.upper()
     else:
         header_name = _carrier_from_header(lines)
         if header_name:
-            record["carrier_name"] = header_name
+            record["carrier_name"] = header_name.upper()
 
     for line in lines:
         lowered = line.lower()
@@ -1013,8 +1013,47 @@ def _extract_rows(file_bytes: bytes) -> List[Dict[str, Any]]:
     return []
 
 
-def process_file(file_bytes: bytes) -> List[Dict[str, Any]]:
+def _needs_model(record: Any) -> bool:
+    """True when the deterministic read is too thin to audit.
+
+    Deliberately blunt. It answers one question - is there enough here for the
+    audit to price anything - not "would the model do better", because a call is
+    only worth spending on a document that is otherwise unusable.
+    """
+    if not isinstance(record, dict) or not record:
+        return True
+
+    invoice_score = sum(1 for field in INVOICE_MARKER_FIELDS if _has_value(record, field))
+    rate_score = sum(1 for field in RATE_SHEET_MARKER_FIELDS if _has_value(record, field))
+
+    if max(invoice_score, rate_score) < 3:
+        return True
+
+    # A rate sheet on a weight basis with no fuel table cannot price fuel, so
+    # every invoice audited against it comes back contract-review with no figure
+    # - exactly the silence worth a retry.
+    if rate_score >= invoice_score:
+        basis = str(record.get("rate_basis") or "").strip().lower()
+        if basis not in {"flat", "minimum charge", "per unit"} and not record.get(
+            "fuel_surcharge_table"
+        ):
+            return True
+
+    return False
+
+
+def process_file(
+    file_bytes: bytes, allow_model_escalation: bool = False
+) -> List[Dict[str, Any]]:
+    """Process one uploaded file into records.
+
+    allow_model_escalation lets the caller spend at most one model call on a
+    document the deterministic reader could not make usable. The poller decides
+    whether that is permitted - it owns the flag and the monthly count - so this
+    stays a pure function of its arguments and the file.
+    """
     raw_rows = _extract_rows(file_bytes)
+    model_budget = bool(allow_model_escalation)
 
     # Off by default. The free tier has no per-account cap worth relying on, so
     # an on-by-default model would spend money on every upload that arrived.
@@ -1029,10 +1068,19 @@ def process_file(file_bytes: bytes) -> List[Dict[str, Any]]:
         if "raw_text" in row:
             ocr = bool(row.get("_ocr"))
             extracted: List[Dict[str, Any]] = []
+            escalated = False
             if ocr or not use_model_for_text:
-                # OCR text never reaches the model. A scanned page that cost a
-                # call on every read would price the free tier per document.
                 extracted = _parse_text_fields(row["raw_text"])
+                if model_budget and _needs_model(extracted[0] if extracted else None):
+                    # One retry per file. The deterministic reader reports what it
+                    # could not read instead of guessing, so a thin result is a
+                    # real signal - this is the document that would otherwise
+                    # reach the user as "could not read" and be abandoned.
+                    retried = extract_from_unstructured_text(row["raw_text"])
+                    if retried:
+                        extracted = retried
+                        escalated = True
+                    model_budget = False
             else:
                 extracted = extract_from_unstructured_text(row["raw_text"])
             if extracted:
@@ -1044,6 +1092,11 @@ def process_file(file_bytes: bytes) -> List[Dict[str, Any]]:
                             # to be carried by hand or the OCR warning is lost on
                             # exactly the documents that parsed.
                             normalized["_ocr"] = True
+                        if escalated:
+                            # Written into details so the poller can count this
+                            # month's calls without a separate table, and so the
+                            # drill-down says which reader produced the figures.
+                            normalized["_extracted_by"] = "model"
                         normalized_rows.append(normalized)
             else:
                 normalized = _normalize_row(row)
