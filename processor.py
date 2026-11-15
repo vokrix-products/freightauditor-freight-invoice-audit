@@ -654,8 +654,10 @@ _DATE_FIELDS = {
 
 _ZIP = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
 _WINDOW = re.compile(
-    r"(?:within|no later than)\s+(\d+)\s+(day|days|month|months)"
-    r"|(\d+)\s+(day|days|month|months)\s+(?:of|from|after)\s+(?:the\s+)?"
+    # Longest unit first. With day|days, "180 days" matched day and the captured
+    # text read "within 180 day", which then travelled onto the claim document.
+    r"(?:within|no later than)\s+(\d+)\s+(days|day|months|month)"
+    r"|(\d+)\s+(days|day|months|month)\s+(?:of|from|after)\s+(?:the\s+)?"
     r"(?:invoice|delivery|ship|receipt)",
     re.IGNORECASE,
 )
