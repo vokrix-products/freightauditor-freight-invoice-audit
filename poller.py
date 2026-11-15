@@ -183,6 +183,85 @@ def _paged_records(customer_id, select):
     return rows
 
 
+MODEL_ESCALATION_FLAG = "FREIGHTAUDITOR_MODEL_ESCALATION"
+MODEL_CAP_ENV = "FREIGHTAUDITOR_MODEL_MONTHLY_CAP"
+DEFAULT_MODEL_MONTHLY_CAP = 200
+
+
+def _month_start_iso():
+    return time.strftime("%Y-%m-01T00:00:00Z", time.gmtime())
+
+
+def count_model_extractions_this_month():
+    """How many records this month were produced by a model retry.
+
+    Counted by paging this month's rows and reading details._extracted_by, not
+    with a PostgREST JSON path filter: a rejected JSON operator returns an empty
+    set, which would report zero calls and let the cap never fire.
+    """
+    total = 0
+    offset = 0
+    while True:
+        params = {
+            "product_id": f"eq.{PRODUCT_ID}",
+            "created_at": f"gte.{_month_start_iso()}",
+            "select": "details",
+            "limit": str(HISTORY_PAGE_SIZE),
+            "offset": str(offset),
+            "order": "id.asc",
+        }
+        resp = _request(
+            "GET",
+            f"{SUPABASE_URL}/rest/v1/records",
+            headers=supabase_headers(),
+            params=params,
+        )
+        page = resp.json()
+        for row in page:
+            details = row.get("details") or {}
+            if isinstance(details, dict) and details.get("_extracted_by") == "model":
+                total += 1
+        if len(page) < HISTORY_PAGE_SIZE:
+            return total
+        offset += HISTORY_PAGE_SIZE
+
+
+def model_escalation_allowed():
+    """Whether this job may spend one model call on a document we cannot read.
+
+    Off unless FREIGHTAUDITOR_MODEL_ESCALATION is on, and capped per calendar
+    month. Fails closed: if the count cannot be read the answer is no, because
+    the cost of being wrong is a bill with no ceiling rather than a worse record.
+    """
+    if os.environ.get(MODEL_ESCALATION_FLAG, "").strip().lower() not in {
+        "1",
+        "on",
+        "true",
+        "yes",
+    }:
+        return False
+
+    try:
+        cap = int(os.environ.get(MODEL_CAP_ENV) or DEFAULT_MODEL_MONTHLY_CAP)
+    except ValueError:
+        cap = DEFAULT_MODEL_MONTHLY_CAP
+
+    if cap <= 0:
+        return False
+
+    try:
+        used = count_model_extractions_this_month()
+    except Exception as error:
+        print(f"model escalation: cap check failed, staying deterministic: {error}", flush=True)
+        return False
+
+    if used >= cap:
+        print(f"model escalation: {used}/{cap} used this month, staying deterministic", flush=True)
+        return False
+
+    return True
+
+
 def fetch_existing_invoice_numbers(customer_id, exclude_source_file_path=None):
     """Invoice numbers this customer has already had processed, with the carrier.
 
@@ -398,7 +477,9 @@ def process_job(job):
 
     try:
         file_bytes = download_file(BUCKET, file_path)
-        results = processor.process_file(file_bytes)
+        results = processor.process_file(
+            file_bytes, allow_model_escalation=model_escalation_allowed()
+        )
         if not isinstance(results, list):
             raise ValueError("processor.process_file must return a list")
 
